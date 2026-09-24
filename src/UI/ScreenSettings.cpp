@@ -33,6 +33,7 @@ namespace
 
     lv_obj_t *infoBody = nullptr;
     lv_obj_t *brokerButton = nullptr;
+    lv_obj_t *manifestButton = nullptr;
     lv_obj_t *rebootButton = nullptr;
 
     // Reboot takes two taps. The first arms it for a few seconds; after that it
@@ -149,6 +150,11 @@ namespace
         Ui_markDirty();
     }
 
+    void onRequestManifests(lv_event_t *event)
+    {
+        Net_requestAllManifests();
+    }
+
     void onReboot(lv_event_t *event)
     {
         if (!rebootArmed)
@@ -239,6 +245,10 @@ lv_obj_t *ScreenSettings_create(lv_obj_t *parent)
     brokerButton = Theme_button(right, "", UI_COL_W - 22, 34);
     lv_obj_add_event_cb(brokerButton, onBroker, LV_EVENT_CLICKED, nullptr);
 
+    manifestButton = Theme_button(right, LV_SYMBOL_DOWNLOAD "  Request manifests",
+                                  UI_COL_W - 22, 34);
+    lv_obj_add_event_cb(manifestButton, onRequestManifests, LV_EVENT_CLICKED, nullptr);
+
     rebootButton = Theme_button(right, LV_SYMBOL_REFRESH "  Reboot panel", UI_COL_W - 22, 38);
     lv_obj_set_style_text_color(rebootButton, UI_COL_DANGER, LV_PART_MAIN);
     lv_obj_set_style_border_color(rebootButton, UI_COL_DANGER, LV_PART_MAIN);
@@ -289,6 +299,15 @@ void ScreenSettings_refresh()
     {
         lv_label_set_text(label, MQTT_isLocal() ? "Switch to cloud broker"
                                                 : "Switch to local broker");
+    }
+
+    if (MQTT_Connected())
+    {
+        lv_obj_clear_state(manifestButton, LV_STATE_DISABLED);
+    }
+    else
+    {
+        lv_obj_add_state(manifestButton, LV_STATE_DISABLED);
     }
 
     // This page refreshes continuously while visible, and again on the first

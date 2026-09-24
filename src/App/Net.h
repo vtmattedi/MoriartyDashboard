@@ -38,6 +38,10 @@ void Net_loop();
 /// @brief Publish a request on the shared Control/request channel.
 void Net_controlRequest(const char *what);
 
+/// @brief Ask every NightMare device to republish its MessagePack manifest.
+/// @return False while MQTT is disconnected.
+bool Net_requestAllManifests();
+
 /// @brief Tell a device to restart, over its console topic.
 /// @return False if MQTT is down or the name is empty.
 bool Net_rebootDevice(const String &deviceName);

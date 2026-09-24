@@ -41,7 +41,7 @@ itself rather than trusting the greyed-out look.
 | **Device**   | Header spans the page; below it, left: bind as the air conditioner, reboot or delete. Right: Boot / Hardware / System across the top, with the device's answer under them. |
 | **Resources**| Every resource value seen on the network, newest per address, with a badge on anything already in use. Tap a row for that resource's page. |
 | **Resource** | One resource: how long ago it arrived, its device, its full topic and its value — and the buttons that give it a job. Light, RGB colour, door sensor (1 = open / 1 = closed), resting screen, or the whole device as the air conditioner. The button for whatever it already does is lit. |
-| **Setup**    | Left: brightness, resting brightness, idle timeout — applied and saved as they move — and **Rest now**. Right: name, firmware, IP, WiFi, broker, uptime, heap; switch between local and cloud broker; reboot the panel. |
+| **Setup**    | Left: brightness, resting brightness, idle timeout — applied and saved as they move — and **Rest now**. Right: name, firmware, IP, WiFi, broker, uptime, heap; switch brokers, request MessagePack manifests from every device, or reboot the panel. |
 | **Resting**  | After the idle timeout or Rest now: a dimmed logo and a 120px clock with a blinking colon, with the corners carrying what matters — top-left anything wrong (door open, no WiFi, no broker), top-right temperatures, bottom-left your chosen resource, bottom-right what is switched on. Any touch wakes it. |
 
 ## Build and flash
@@ -447,8 +447,8 @@ destroyed while the panel runs, so the heap does not fragment over long uptimes.
   half-built handle and the first publish panics the core into a boot loop.
 
   Three things keep that from happening, and all three are load-bearing:
-  list rows on the Devices and Resources screens are built **lazily** as entries
-  appear (never a screenful up front, and never below the `Ui_canAllocateRow()`
+  device rows are built **lazily**, while Resources uses four reusable rows and
+  pages through the registry (neither allocates below the `Ui_canAllocateRow()`
   floor); the LVGL render buffer is small and deliberately **not**
   DMA-capable, since the DMA pool is what the WiFi driver draws from; and
   `startNightMareESP()` runs from `loop()` behind a heap check rather than from
@@ -465,8 +465,8 @@ destroyed while the panel runs, so the heap does not fragment over long uptimes.
   memory at whatever moment the tap lands, including mid-TLS-reconnect, and a
   failed allocation inside LVGL 8 crashes instead of failing. List rows are the
   opposite — built on demand and freed when their page is left or the panel
-  rests, since a full list is the UI's largest allocation and is off-screen
-  almost all the time.
+  rests. The Resources list never holds more than one four-row page, regardless
+  of how many entries the registry contains.
 
   `HEAP` on the console reports free, minimum-ever-free, largest free block and
   dropped messages. Largest block matters as much as the total: a fragmented

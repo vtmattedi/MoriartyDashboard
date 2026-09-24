@@ -313,6 +313,18 @@ void Net_controlRequest(const char *what)
     MQTT_Send_Raw("Control/request", what);
 }
 
+bool Net_requestAllManifests()
+{
+    if (!MQTT_Connected())
+    {
+        return false;
+    }
+    // Broadcast console commands are addressed to the reserved `all` target.
+    // Do not prepend this panel's device name to the topic.
+    MQTT_Send("all/console/in", ">manifest msgpack", false, false);
+    return true;
+}
+
 bool Net_rebootDevice(const String &deviceName)
 {
     if (!deviceName.length() || !MQTT_Connected())

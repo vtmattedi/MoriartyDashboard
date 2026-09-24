@@ -10,20 +10,15 @@
 
 // Every resource the panel has seen on the network, newest value wins.
 //
-// Each row is one `<device>/resource/<name>/state` heard on the wildcard
-// subscription in App/Net.cpp, showing the codec representation exactly as it
-// was published -- "true", "23.5", "cool".
-//
-// This is also the way in to the panel's chooser: tapping a row opens
-// ScreenResource, where that exact resource is given a job. The list itself only
-// lists -- it shows the current value, how long ago it arrived, and a badge for
-// anything already in use.
-//
-// The rows are built lazily as values arrive and freed when the page is left,
-// so a network that publishes a lot of resources cannot grow the heap here.
+// Four reusable rows are kept on screen at once. The registry can hold forty
+// resources, but allocating a set of LVGL objects for every one needlessly
+// competes with TLS for the ESP32's small heap. Previous/next buttons move the
+// same four widgets through the registry instead.
 
 namespace
 {
+    const int RowsPerPage = 4;
+
     struct ResourceRow
     {
         lv_obj_t *root;
@@ -35,23 +30,55 @@ namespace
 
     lv_obj_t *page = nullptr;
     lv_obj_t *emptyLabel = nullptr;
-    ResourceRow rows[REGISTRY_MAX_RESOURCES];
+    lv_obj_t *pager = nullptr;
+    lv_obj_t *previousButton = nullptr;
+    lv_obj_t *nextButton = nullptr;
+    lv_obj_t *pageLabel = nullptr;
+    ResourceRow rows[RowsPerPage];
+    int firstIndex = 0;
 
     void onRowClicked(lv_event_t *event)
     {
-        const int index = (int)(intptr_t)lv_event_get_user_data(event);
-        const ResourceEntry *entry = Registry_resource(index);
-        if (!entry)
+        const int slot = (int)(intptr_t)lv_event_get_user_data(event);
+        const ResourceEntry *entry = Registry_resource(firstIndex + slot);
+        if (entry)
         {
-            return;
+            // Copy the address before changing pages; registry entries remain
+            // live and may be replaced when a full table evicts an old value.
+            Ui_showResource(entry->device, entry->resource);
         }
-        // Copied out now: the registry reorders as values arrive, so the index
-        // this row was built with stops meaning this resource the moment the
-        // page is left.
-        Ui_showResource(entry->device, entry->resource);
     }
-    /// The job this resource does, or nullptr. Roles come first: a resource the
-    /// panel drives is the more interesting fact about it.
+
+    void onPreviousClicked(lv_event_t *)
+    {
+        if (firstIndex >= RowsPerPage)
+        {
+            firstIndex -= RowsPerPage;
+            Ui_markDirty();
+        }
+    }
+
+    void onNextClicked(lv_event_t *)
+    {
+        if (firstIndex + RowsPerPage < Registry_resourceCount())
+        {
+            firstIndex += RowsPerPage;
+            Ui_markDirty();
+        }
+    }
+
+    void setButtonEnabled(lv_obj_t *button, bool enabled)
+    {
+        if (enabled)
+        {
+            lv_obj_clear_state(button, LV_STATE_DISABLED);
+        }
+        else
+        {
+            lv_obj_add_state(button, LV_STATE_DISABLED);
+        }
+    }
+
     const char *jobLabel(const String &device, const String &resource)
     {
         if (Targets_matches(TARGET_SLOT_LIGHT, device, resource))
@@ -72,11 +99,11 @@ namespace
         return nullptr;
     }
 
-    /// Build row `index` if it does not exist yet. Returns false when the heap is
-    /// too tight to spend on it; a later refresh retries.
-    bool ensureRow(int index)
+    /// Build one of the four reusable rows if it does not exist yet. Returns
+    /// false when the heap is temporarily too tight; a later refresh retries.
+    bool ensureRow(int slot)
     {
-        ResourceRow &row = rows[index];
+        ResourceRow &row = rows[slot];
         if (row.root)
         {
             return true;
@@ -87,8 +114,11 @@ namespace
         }
 
         row.root = lv_obj_create(page);
+        // Rows are created after the persistent pager and empty-state label.
+        // Keep the pager first, then place rows in their slot order.
+        lv_obj_move_to_index(row.root, slot + 1);
         lv_obj_remove_style_all(row.root);
-        lv_obj_set_size(row.root, UI_CARD_W, 46);
+        lv_obj_set_size(row.root, UI_CARD_W, 44);
         lv_obj_set_style_bg_color(row.root, UI_COL_SURFACE, LV_PART_MAIN);
         lv_obj_set_style_bg_opa(row.root, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_bg_color(row.root, UI_COL_SURFACE_ALT, LV_PART_MAIN | LV_STATE_PRESSED);
@@ -96,25 +126,23 @@ namespace
         lv_obj_set_style_pad_hor(row.root, 10, LV_PART_MAIN);
         lv_obj_clear_flag(row.root, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row.root, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row.root, onRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+        lv_obj_add_event_cb(row.root, onRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
 
-        // Most of the row goes to the names; the value on the right is short.
         const lv_coord_t nameWidth = UI_CARD_W - 190;
 
         row.name = Theme_label(row.root, "", &lv_font_montserrat_14, UI_COL_TEXT);
         lv_label_set_long_mode(row.name, LV_LABEL_LONG_DOT);
         lv_obj_set_width(row.name, nameWidth);
-        lv_obj_align(row.name, LV_ALIGN_TOP_LEFT, 0, 5);
+        lv_obj_align(row.name, LV_ALIGN_TOP_LEFT, 0, 4);
 
         row.device = Theme_label(row.root, "", &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
         lv_label_set_long_mode(row.device, LV_LABEL_LONG_DOT);
         lv_obj_set_width(row.device, nameWidth);
-        lv_obj_align(row.device, LV_ALIGN_BOTTOM_LEFT, 0, -5);
+        lv_obj_align(row.device, LV_ALIGN_BOTTOM_LEFT, 0, -4);
 
         row.value = Theme_label(row.root, "", &lv_font_montserrat_16, UI_COL_ACCENT);
         lv_obj_align(row.value, LV_ALIGN_RIGHT_MID, 0, 0);
 
-        // Marks a resource that has been given a job.
         row.badge = Theme_chip(row.root);
         lv_obj_align(row.badge, LV_ALIGN_RIGHT_MID, -90, 0);
         lv_obj_add_flag(row.badge, LV_OBJ_FLAG_HIDDEN);
@@ -129,29 +157,31 @@ lv_obj_t *ScreenSensors_create(lv_obj_t *parent)
     page = lv_obj_create(parent);
     Theme_plainContainer(page);
     lv_obj_set_size(page, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(page, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(page, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(page, UI_GUTTER, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(page, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(page, 4, LV_PART_MAIN);
 
-    emptyLabel = Theme_label(page, "No resources heard yet.", &lv_font_montserrat_14, UI_COL_TEXT_DIM);
+    // The pager exists for the lifetime of the UI. Only the four comparatively
+    // expensive resource rows are released and rebuilt as the screen is used.
+    pager = Theme_row(page, UI_CARD_W, 34);
+    previousButton = Theme_button(pager, LV_SYMBOL_LEFT "  Previous", 112, 32);
+    lv_obj_add_event_cb(previousButton, onPreviousClicked, LV_EVENT_CLICKED, nullptr);
 
-    // Rows are built on demand in the refresh below, not here -- see the note
-    // in ScreenDevices. Binding moved to its own page, which like every other
-    // page is built once at boot, while the heap is plentiful.
+    pageLabel = Theme_label(pager, "", &lv_font_montserrat_14, UI_COL_TEXT_DIM);
+
+    nextButton = Theme_button(pager, "Next  " LV_SYMBOL_RIGHT, 112, 32);
+    lv_obj_add_event_cb(nextButton, onNextClicked, LV_EVENT_CLICKED, nullptr);
+
+    emptyLabel = Theme_label(page, "No resources heard yet.", &lv_font_montserrat_14,
+                             UI_COL_TEXT_DIM);
 
     return page;
 }
 
 void ScreenSensors_release()
 {
-    // A full list is a lot of LVGL objects, and this page is off-screen almost
-    // all the time. Freeing the rows whenever it is left puts that memory back
-    // for mbedTLS instead of holding it all night under the resting screen.
-    for (int i = 0; i < REGISTRY_MAX_RESOURCES; ++i)
+    for (int i = 0; i < RowsPerPage; ++i)
     {
         if (rows[i].root)
         {
@@ -164,13 +194,22 @@ void ScreenSensors_release()
 void ScreenSensors_refresh()
 {
     const int count = Registry_resourceCount();
-    int shown = 0;
 
-    for (int i = 0; i < REGISTRY_MAX_RESOURCES; ++i)
+    // Keep the current page valid if resources disappear with a deleted device.
+    if (count == 0)
     {
-        ResourceRow &row = rows[i];
-        const ResourceEntry *entry = Registry_resource(i);
+        firstIndex = 0;
+    }
+    else if (firstIndex >= count)
+    {
+        firstIndex = ((count - 1) / RowsPerPage) * RowsPerPage;
+    }
 
+    int shown = 0;
+    for (int slot = 0; slot < RowsPerPage; ++slot)
+    {
+        ResourceRow &row = rows[slot];
+        const ResourceEntry *entry = Registry_resource(firstIndex + slot);
         if (!entry)
         {
             if (row.root)
@@ -179,16 +218,13 @@ void ScreenSensors_refresh()
             }
             continue;
         }
-        if (!ensureRow(i))
+        if (!ensureRow(slot))
         {
             continue;
         }
+
         ++shown;
         lv_obj_clear_flag(row.root, LV_OBJ_FLAG_HIDDEN);
-
-        // Only rewritten when changed: this refresh runs several times a second
-        // on a busy broker, and every lv_label_set_text is a heap realloc plus a
-        // redraw even when the text is identical.
         Theme_setText(row.name, entry->resource.c_str());
 
         char age[24];
@@ -197,11 +233,6 @@ void ScreenSensors_refresh()
         snprintf(detail, sizeof(detail), "%s - %s", entry->device.c_str(), age);
         Theme_setText(row.device, detail);
 
-        // A JSON document has no business in a 90px column -- it would be
-        // clipped to something misleading like `{"state":1,"tar`. The type is
-        // the honest summary, and the whole document is one tap away on the
-        // resource page. Dimmed, so it reads as "what this is" rather than as
-        // a value that happens to spell "struct".
         const bool isStruct = Ui_valueIsStruct(entry->value);
         Theme_setText(row.value, isStruct ? "struct" : entry->value.c_str());
         lv_obj_set_style_text_color(row.value, isStruct ? UI_COL_TEXT_FAINT : UI_COL_ACCENT,
@@ -219,28 +250,30 @@ void ScreenSensors_refresh()
         }
     }
 
-    // The label that says "nothing yet" doubles as the one that says "not all
-    // of it". A row costs about a kilobyte of LVGL objects and Ui_canAllocateRow()
-    // refuses to spend it below the floor, so on a panel this tight the list
-    // stops short -- and it used to stop short in silence, which reads as the
-    // network having fewer resources than it does. The label is built once with the
-    // page, so reporting the shortfall costs nothing at the moment there is
-    // nothing to spare.
     if (count == 0)
     {
         Theme_setText(emptyLabel, "No resources heard yet.");
         lv_obj_clear_flag(emptyLabel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(pager, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
-    else if (shown < count)
+
+    lv_obj_clear_flag(pager, LV_OBJ_FLAG_HIDDEN);
+    const int expected = (count - firstIndex < RowsPerPage) ? count - firstIndex : RowsPerPage;
+    if (shown < expected)
     {
-        char note[64];
-        snprintf(note, sizeof(note), "%d of %d shown - not enough memory for the rest", shown,
-                 count);
-        Theme_setText(emptyLabel, note);
+        Theme_setText(emptyLabel, "Not enough memory to draw this page yet.");
         lv_obj_clear_flag(emptyLabel, LV_OBJ_FLAG_HIDDEN);
     }
     else
     {
         lv_obj_add_flag(emptyLabel, LV_OBJ_FLAG_HIDDEN);
     }
+
+    char position[24];
+    const int lastIndex = (firstIndex + RowsPerPage < count) ? firstIndex + RowsPerPage : count;
+    snprintf(position, sizeof(position), "%d-%d of %d", firstIndex + 1, lastIndex, count);
+    Theme_setText(pageLabel, position);
+    setButtonEnabled(previousButton, firstIndex > 0);
+    setButtonEnabled(nextButton, firstIndex + RowsPerPage < count);
 }

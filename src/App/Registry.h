@@ -13,10 +13,9 @@
 // newest-wins, oldest evicted -- rather than growing without limit on a network
 // whose size the panel does not control.
 
-// Sized for what a panel can usefully show, not for what the network might
-// publish. Each entry also costs a row of LVGL widgets on the Devices and
-// Resources screens, and on a PSRAM-less ESP32 sharing a heap with mbedTLS that
-// is the binding constraint -- see Ui_canAllocateRow().
+// Sized for what a panel can usefully retain, not for what the network might
+// publish. The Resources screen pages through this table with four reusable
+// rows so registry capacity no longer implies the same number of LVGL widgets.
 //
 // A single AC controller publishes around eighteen resources on its own, so the
 // resource table is deliberately several times the device table.

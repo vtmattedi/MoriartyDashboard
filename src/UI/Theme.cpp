@@ -8,6 +8,7 @@ namespace
     lv_style_t styleChip;
     lv_style_t styleButton;
     lv_style_t styleButtonPressed;
+    lv_style_t styleButtonDisabled;
     bool ready = false;
 }
 
@@ -56,6 +57,12 @@ void Theme_init()
     lv_style_set_bg_color(&styleButtonPressed, UI_COL_ACCENT);
     lv_style_set_text_color(&styleButtonPressed, UI_COL_BG);
     lv_style_set_border_color(&styleButtonPressed, UI_COL_ACCENT);
+
+    lv_style_init(&styleButtonDisabled);
+    lv_style_set_bg_color(&styleButtonDisabled, UI_COL_SURFACE);
+    lv_style_set_text_color(&styleButtonDisabled, UI_COL_TEXT_FAINT);
+    lv_style_set_border_color(&styleButtonDisabled, UI_COL_SURFACE_ALT);
+    lv_style_set_opa(&styleButtonDisabled, LV_OPA_60);
 }
 
 void Theme_plainContainer(lv_obj_t *obj)
@@ -166,6 +173,7 @@ lv_obj_t *Theme_button(lv_obj_t *parent, const char *text, lv_coord_t w, lv_coor
     lv_obj_remove_style_all(button);
     lv_obj_add_style(button, &styleButton, LV_PART_MAIN);
     lv_obj_add_style(button, &styleButtonPressed, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_style(button, &styleButtonDisabled, LV_PART_MAIN | LV_STATE_DISABLED);
     lv_obj_set_size(button, w, h);
 
     lv_obj_t *label = lv_label_create(button);
