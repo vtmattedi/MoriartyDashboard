@@ -26,3 +26,7 @@
 
 # Local agent configuration, not project source.
 /.claude
+
+# Transient markers written and removed by src/Version/script.py during a build.
+# src/Version/version itself is tracked -- it is the version, not a build artifact.
+/src/Version/.version_no_increment*

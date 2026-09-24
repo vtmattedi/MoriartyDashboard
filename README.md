@@ -538,3 +538,27 @@ destroyed while the panel runs, so the heap does not fragment over long uptimes.
   - Anything laying out pixels must use `SCREEN_WIDTH`/`SCREEN_HEIGHT`, never
     `TFT_WIDTH`/`TFT_HEIGHT`: those stay the panel's native portrait size and
     are what the touch transform is expressed in.
+
+## License
+
+This project is MIT licensed — see [LICENSE](LICENSE).
+
+It also carries vendored third-party work, each under its own terms. Both are
+redistributed here with their licence files intact, and one of them has a
+condition you must keep:
+
+| What | Where | Licence |
+| --- | --- | --- |
+| LVGL 8.3.6 | [lib/lvgl](lib/lvgl) | MIT, © LVGL Kft — [LICENCE.txt](lib/lvgl/LICENCE.txt) |
+| Weather icons | [include/Weather icons](include/Weather%20icons) | **CC BY 4.0**, © [amCharts](https://www.amcharts.com/) — [LICENSE](include/Weather%20icons/LICENSE) |
+| Font Awesome 5 webfont | `include/Weather icons/animated/c/` | Font: SIL OFL 1.1; icons: CC BY 4.0, © Fonticons, Inc. |
+
+**The icons require attribution.** CC BY 4.0 is not public domain: anything that
+ships these icons — this firmware, a fork, a photo of the panel used
+commercially — has to credit amCharts. That obligation travels with the
+artwork and is not waived by this project's MIT licence, which covers the code
+only.
+
+LVGL is vendored rather than pulled as a dependency because
+[lib/lv_conf.h](lib/lv_conf.h) is written against that exact version; see
+[lib/README.md](lib/README.md).
