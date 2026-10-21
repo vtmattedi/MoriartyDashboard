@@ -216,7 +216,7 @@ namespace
             // Nothing changed state, so the normal render would not run: say so
             // here, or the tap would look ignored.
             lv_label_set_text(resultTitle, Queries[index].command);
-            lv_label_set_text(resultBody, "Could not ask: the broker is offline, or there is not "
+            lv_label_set_text(resultBody, "Could not ask: the gateway is offline, or there is not "
                                           "enough free memory right now. Try again shortly.");
             return;
         }

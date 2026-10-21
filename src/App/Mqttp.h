@@ -1,8 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
-// MQTTP: request/response over MQTT, the same protocol the backend uses to ask
-// a device about itself.
+// MQTTP-compatible correlated console request/response over the active
+// NightMare connection (ESP-NOW in this build).
 //
 //   request  ->  <Device>/console/controlled/<id>/in    (the command text)
 //   reply    <-  <Device>/console/controlled/<id>/out
@@ -14,10 +14,9 @@
 //
 //  * Listening is per *device* and lasts as long as the page is open, not per
 //    request. The library no longer takes "#", so replies have to be subscribed
-//    for -- but subscribing per request does not work: esp_mqtt_client_subscribe
-//    only queues a SUBSCRIBE, and at QoS 0 a device answering in a millisecond
-//    beats the broker's SUBACK over a TLS link every time, so the reply is
-//    dropped before anyone is listening for it. Mqttp_listenTo() therefore takes
+//    for -- but subscribing per request races a fast device's reply. The reply
+//    can arrive before the gateway has installed the subscription, so
+//    Mqttp_listenTo() therefore takes
 //    "<device>/console/controlled/+/out" when the page opens and gives it back
 //    when the page is left. The wildcard is one device wide, and the request id
 //    still does the correlating.
@@ -26,9 +25,8 @@
 //    allocated when a request is made, freed by Mqttp_cancel(). The panel is a
 //    viewer, not a store: it holds one answer for one device for as long as it
 //    is on screen, and nothing accumulates. Reassembling chunks into a growing
-//    String would fragment the heap, which on this board means the next mbedTLS
-//    handshake fails; holding the block permanently would take it from that
-//    same handshake. Mqttp_request() returns false if it cannot be allocated.
+//    String would fragment this board's small heap. Mqttp_request() returns
+//    false if its fixed block cannot be allocated.
 
 /// Cap on a reassembled reply. Real answers run 200B to ~4KB; the backend's
 /// 256KB ceiling is a backend limit, not a device reality. Anything longer is
@@ -61,7 +59,7 @@ void Mqttp_stopListening();
 /// @param device Device name in the exact casing it publishes under -- the
 /// firmware derives the reply topic from the request topic, and the panel has
 /// to have subscribed to that exact string.
-/// @return False if MQTT is down, the subscription was refused, or the
+/// @return False if the gateway is down, the subscription was refused, or the
 /// arguments are empty.
 bool Mqttp_request(const String &device, const String &command);
 
@@ -71,7 +69,7 @@ void Mqttp_cancel();
 /// @brief Time out a stale request. Call regularly.
 void Mqttp_tick();
 
-/// @brief Offer an incoming MQTT message. True if it belonged to this module.
+/// @brief Offer an incoming network message. True if it belonged to this module.
 bool Mqttp_handleMessage(const String &topic, const String &payload);
 
 MqttpState Mqttp_state();

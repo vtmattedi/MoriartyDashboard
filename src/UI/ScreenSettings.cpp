@@ -8,7 +8,6 @@
 #include <boardstuff.h>
 #include <NightMare.h>
 #include <Version.h>
-#include <WiFi.h>
 
 // The panel's own settings -- everything here is about this device, not about
 // the network it watches.
@@ -32,7 +31,7 @@ namespace
     lv_obj_t *idleValue = nullptr;
 
     lv_obj_t *infoBody = nullptr;
-    lv_obj_t *brokerButton = nullptr;
+    lv_obj_t *transportButton = nullptr;
     lv_obj_t *manifestButton = nullptr;
     lv_obj_t *rebootButton = nullptr;
 
@@ -137,19 +136,6 @@ namespace
         Ui_restNow();
     }
 
-    void onBroker(lv_event_t *event)
-    {
-        // Swap between the local broker and the cloud one. Takes effect at once
-        // -- the client reconnects -- and is not persisted, because which broker
-        // is reachable is a property of where the panel is, not of the panel.
-        //
-        // Nothing switches it back on its own: the library has no automatic
-        // broker failover any more, so the choice made here holds until it is
-        // made again or the panel reboots.
-        MQTT_change_to(!MQTT_isLocal());
-        Ui_markDirty();
-    }
-
     void onRequestManifests(lv_event_t *event)
     {
         Net_requestAllManifests();
@@ -242,8 +228,8 @@ lv_obj_t *ScreenSettings_create(lv_obj_t *parent)
     lv_obj_set_width(infoBody, UI_COL_W - 22);
     lv_obj_set_style_text_line_space(infoBody, 1, LV_PART_MAIN);
 
-    brokerButton = Theme_button(right, "", UI_COL_W - 22, 34);
-    lv_obj_add_event_cb(brokerButton, onBroker, LV_EVENT_CLICKED, nullptr);
+    transportButton = Theme_button(right, "ESP-NOW transport", UI_COL_W - 22, 34);
+    lv_obj_add_state(transportButton, LV_STATE_DISABLED);
 
     manifestButton = Theme_button(right, LV_SYMBOL_DOWNLOAD "  Request manifests",
                                   UI_COL_W - 22, 34);
@@ -272,6 +258,13 @@ lv_obj_t *ScreenSettings_create(lv_obj_t *parent)
 void ScreenSettings_refresh()
 {
     const uint32_t uptime = millis() / 1000;
+    const NightMare::WiFiInfo wifi = WiFi_info();
+    const NightMare::ConnectionState connection = NightMare::GetConnectionState();
+    const char *connectionText =
+        connection == NightMare::ConnectionState::CONNECTED ? "connected" :
+        connection == NightMare::ConnectionState::DISCOVERING ? "discovering" :
+        connection == NightMare::ConnectionState::CONNECTING ? "connecting" :
+        connection == NightMare::ConnectionState::ERROR ? "error" : "stopped";
 
     char text[320];
     snprintf(text, sizeof(text),
@@ -279,14 +272,14 @@ void ScreenSettings_refresh()
              "#8a97a8 firmware#  %s\n"
              "#8a97a8 ip#  %s\n"
              "#8a97a8 wifi#  %s\n"
-             "#8a97a8 broker#  %s\n"
+             "#8a97a8 esp-now#  %s\n"
              "#8a97a8 uptime#  %lud %luh %02lum\n"
              "#8a97a8 heap#  %u free / %u largest",
              gDeviceIdentity.getDeviceName().c_str(),
              VERSION,
-             WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "--",
-             WiFi.status() == WL_CONNECTED ? WiFi.SSID().c_str() : "disconnected",
-             !MQTT_Connected() ? "offline" : (MQTT_isLocal() ? "local" : "cloud"),
+             wifi.state == NightMare::WiFiState::CONNECTED ? wifi.ip.c_str() : "--",
+             wifi.state == NightMare::WiFiState::CONNECTED ? wifi.ssid.c_str() : "disconnected",
+             connectionText,
              (unsigned long)(uptime / 86400),
              (unsigned long)((uptime % 86400) / 3600),
              (unsigned long)((uptime % 3600) / 60),
@@ -294,14 +287,7 @@ void ScreenSettings_refresh()
              (unsigned)Heap_largest());
     lv_label_set_text(infoBody, text);
 
-    lv_obj_t *label = lv_obj_get_child(brokerButton, 0);
-    if (label)
-    {
-        lv_label_set_text(label, MQTT_isLocal() ? "Switch to cloud broker"
-                                                : "Switch to local broker");
-    }
-
-    if (MQTT_Connected())
+    if (connection == NightMare::ConnectionState::CONNECTED)
     {
         lv_obj_clear_state(manifestButton, LV_STATE_DISABLED);
     }

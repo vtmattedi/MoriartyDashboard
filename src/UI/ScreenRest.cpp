@@ -10,7 +10,6 @@
 
 #include <boardstuff.h>
 #include <NightMare.h>
-#include <WiFi.h>
 #include <time.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -229,15 +228,15 @@ void ScreenRest_refresh()
     {
         appendf(buffer, sizeof(buffer), used, "#ffc64b " LV_SYMBOL_WARNING " Door open#");
     }
-    if (WiFi.status() != WL_CONNECTED)
+    if (WiFi_state() != NightMare::WiFiState::CONNECTED)
     {
         appendf(buffer, sizeof(buffer), used, "%s#f2566a " LV_SYMBOL_WIFI " No WiFi#", used ? "\n" : "");
     }
-    else if (!MQTT_Connected())
+    else if (NightMare::GetConnectionState() != NightMare::ConnectionState::CONNECTED)
     {
         // Only worth saying when the WiFi is up: otherwise it is the same fault
         // reported twice.
-        appendf(buffer, sizeof(buffer), used, "%s#f2566a " LV_SYMBOL_LOOP " No broker#", used ? "\n" : "");
+        appendf(buffer, sizeof(buffer), used, "%s#f2566a " LV_SYMBOL_LOOP " No gateway#", used ? "\n" : "");
     }
     Theme_setText(cornerWarnings, buffer);
 

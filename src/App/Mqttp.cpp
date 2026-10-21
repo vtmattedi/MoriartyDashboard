@@ -85,7 +85,7 @@ bool Mqttp_listenTo(const String &device)
     // device -- and only that device, so the panel does not carry the rest of
     // the network's command traffic through its inbox.
     const String filter = device + "/console/controlled/+/out";
-    if (!MQTT_SubscribeTopic(filter))
+    if (!NightMare::Subscribe(filter.c_str()))
     {
         return false;
     }
@@ -99,7 +99,7 @@ void Mqttp_stopListening()
     Mqttp_cancel();
     if (listeningFilter.length())
     {
-        MQTT_UnsubscribeTopic(listeningFilter);
+        NightMare::Unsubscribe(listeningFilter.c_str());
         listeningFilter = "";
     }
     listeningDevice = "";
@@ -107,7 +107,8 @@ void Mqttp_stopListening()
 
 bool Mqttp_request(const String &device, const String &command)
 {
-    if (!device.length() || !command.length() || !MQTT_Connected())
+    if (!device.length() || !command.length() ||
+        NightMare::GetConnectionState() != NightMare::ConnectionState::CONNECTED)
     {
         return false;
     }
@@ -152,7 +153,14 @@ bool Mqttp_request(const String &device, const String &command)
     deadline = millis() + MQTTP_TIMEOUT_MS;
     revision++;
 
-    MQTT_Send(base + "/in", command, false, false);
+    const String topic = base + "/in";
+    if (!NightMare::Publish(topic.c_str(),
+                            reinterpret_cast<const uint8_t *>(command.c_str()),
+                            command.length(), false))
+    {
+        finish(MQTTP_FAILED);
+        return false;
+    }
     return true;
 }
 

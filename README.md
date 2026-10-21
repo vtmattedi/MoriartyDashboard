@@ -5,6 +5,10 @@ the network as an ordinary NightMare device and drives an air conditioner, a
 light and an RGB light that live on *other* devices, over the NightMare resource
 protocol.
 
+Current transport: **ESP-NOW through the NightMare gateway**. The Wi-Fi IP
+station remains enabled for SNTP and other direct IP services; MQTT is compiled
+out (`NM_ENABLE_MQTT=0`). The gateway must share the station's Wi-Fi channel.
+
 Hardware: **Sunton ESP32-3248S035C** — ESP32-WROOM-32, 4MB flash, no PSRAM,
 ST7796 320×480 SPI panel, GT911 capacitive touch, RGB status LED, PWM backlight.
 Mounted **landscape**: the UI is 480×320.
@@ -37,12 +41,12 @@ itself rather than trusting the greyed-out look.
 | Screen       | What it does                                                                 |
 | ------------ | ---------------------------------------------------------------------------- |
 | **Home**     | Left column, the AC: tap to toggle power, with state, setpoint, door, and buttons for Auto, sleep (`🔔`) and adjust (`⚙`). Adjust expands over the page for setpoint −/+ and **Sync with unit**. Right column (scrolls): weather (tap to refresh), the light (tap to toggle) and the RGB light. |
-| **Devices**  | Everything heard announcing itself on the broker, with online state and age. Tap a row for that device's detail page. |
+| **Devices**  | Everything heard announcing itself through the gateway, with online state and age. Tap a row for that device's detail page. |
 | **Device**   | Header spans the page; below it, left: bind as the air conditioner, reboot or delete. Right: Boot / Hardware / System across the top, with the device's answer under them. |
 | **Resources**| Every resource value seen on the network, newest per address, with a badge on anything already in use. Tap a row for that resource's page. |
 | **Resource** | One resource: how long ago it arrived, its device, its full topic and its value — and the buttons that give it a job. Light, RGB colour, door sensor (1 = open / 1 = closed), resting screen, or the whole device as the air conditioner. The button for whatever it already does is lit. |
-| **Setup**    | Left: brightness, resting brightness, idle timeout — applied and saved as they move — and **Rest now**. Right: name, firmware, IP, WiFi, broker, uptime, heap; switch brokers, request MessagePack manifests from every device, or reboot the panel. |
-| **Resting**  | After the idle timeout or Rest now: a dimmed logo and a 120px clock with a blinking colon, with the corners carrying what matters — top-left anything wrong (door open, no WiFi, no broker), top-right temperatures, bottom-left your chosen resource, bottom-right what is switched on. Any touch wakes it. |
+| **Setup**    | Left: brightness, resting brightness, idle timeout — applied and saved as they move — and **Rest now**. Right: name, firmware, IP, WiFi, ESP-NOW state, uptime, heap; request MessagePack manifests or reboot the panel. |
+| **Resting**  | After the idle timeout or Rest now: a dimmed logo and a 120px clock with a blinking colon, with the corners carrying what matters — top-left anything wrong (door open, no WiFi, no gateway), top-right temperatures, bottom-left your chosen resource, bottom-right what is switched on. Any touch wakes it. |
 
 ## Build and flash
 
@@ -58,7 +62,8 @@ First build only:
 cp include/creds.example.h include/creds.h   # then fill it in
 ```
 
-`include/creds.h` holds the WiFi and MQTT passwords and is gitignored.
+`include/creds.h` holds the Wi-Fi fallback profile and is gitignored. ESP-NOW
+uses gateway discovery and needs no broker credentials or certificate.
 `include/NightMareConfig.h` selects the library's features and is not secret —
 it is where the timezone, the log level and the threading choices live.
 
@@ -347,9 +352,8 @@ immediately. They can also be set over the console — `CONFIG SET rest_after 12
 — but the screen manager caches them, so a console change takes effect on the
 next reboot unless something calls `Ui_reloadSettings()`.
 
-The broker switch on Setup is deliberately *not* persisted: which broker is
-reachable depends on where the panel is, not on the panel. Nothing switches it
-back on its own — the library has no automatic broker failover.
+The connection is fixed to ESP-NOW in this build. Setup reports gateway state;
+there is no broker selector.
 
 ## Backend: the forecast reply is not implemented yet
 
@@ -385,7 +389,7 @@ src/
     LightControl.cpp    The light and the colour, and the one-number colour model
     Targets.cpp         Which (device, resource) fills which role, persisted
     Registry.cpp        Bounded snapshot of devices and resource values seen
-    Mqttp.cpp           Request/response over MQTT, one at a time, fixed buffer
+    Mqttp.cpp           Correlated console request/response, one at a time
     SensorBindings.cpp  The door and resting-screen resources
     Forecast.cpp        Weather model; the only place the icon set is included
   UI/
@@ -397,7 +401,7 @@ src/
 include/
   NightMareConfig.h     Library feature selection; read this before changing behaviour
   NightMareHardware.h   The board and its pins, as published in <device>/info
-  creds.h               WiFi and MQTT secrets; gitignored
+  creds.h               Wi-Fi fallback profile; gitignored
 lib/                    Vendored libraries -- see lib/README.md
 tools/png2lvgl.py       PNG to LVGL C array converter
 ```
@@ -407,14 +411,15 @@ destroyed while the panel runs, so the heap does not fragment over long uptimes.
 
 ## Things to know
 
+The transport and memory notes below describe the current ESP-NOW build unless
+explicitly marked historical. MQTT/TLS tuning is no longer active.
+
 - **The panel is single-tasked, and two settings keep it that way.**
-  NightMareNetwork calls the message callback from inside the esp-mqtt event
-  handler, on a task that runs in parallel with `loop()` on this dual-core chip.
-  The callback in [src/App/Net.cpp](src/App/Net.cpp) therefore only filters by
-  topic, copies the message into a fixed-size ring buffer and returns;
-  `Net_loop()` does all the routing. The queue drops rather than blocks when
-  full, since a blocked MQTT task misses keep-alives; `Net_droppedMessages()`
-  (and the `HEAP` command) should stay at 0.
+  ESP-NOW delivers on the Wi-Fi event task. The bridge in
+  [src/App/Net.cpp](src/App/Net.cpp) only copies frames into a fixed-size ring
+  buffer; `Net_loop()` runs framework routing and dashboard routing. The queue
+  drops rather than blocks the event task; `Net_droppedMessages()` (and the
+  `HEAP` command) should stay at 0.
 
   `NM_SCHEDULER_OWN_TASK 0` in `include/NightMareConfig.h` is the other half:
   with the default of 1 the Scheduler gets its own FreeRTOS task and every job

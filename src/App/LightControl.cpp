@@ -8,8 +8,8 @@ namespace
 {
     // Static storage: the resource manager keeps non-owning pointers to these
     // for the life of the panel.
-    RemoteState<bool> light;
-    RemoteState<uint32_t> rgb;
+    RemoteState<bool> light{"light"};
+    RemoteState<uint32_t> rgb{"rgb"};
 
     String appliedLightDevice;
     String appliedLightResource;

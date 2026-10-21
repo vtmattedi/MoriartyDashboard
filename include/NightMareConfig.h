@@ -26,44 +26,31 @@
 #define NM_ENABLE_NETWORK 1
 #define NM_ENABLE_CONSOLE 1
 #define NM_ENABLE_WIFI 1
-#define NM_ENABLE_MQTT 1
+#define NM_ENABLE_MQTT 0
+#define NM_NETWORK_MQTT 0
+#define NM_NETWORK_LOCALMQTT 0
+#define NM_NETWORK_ESPNOW 1
 #define NM_ENABLE_TELEMETRY 1
 #define NM_ENABLE_SCHEDULER 1
 #define NM_ENABLE_JOBS 1
 #define NM_ENABLE_TIME_SYNC 1
 
-// The panel reads the console over USB; it is the only way in without a broker.
+// Moriarty keeps the IP station for SNTP and other direct Wi-Fi services, but
+// NightMare messages use ESP-NOW through the local gateway. Do not let an old
+// persisted broker choice prevent ESP-NOW from starting.
+#define NM_WIFI_AUTO 1
+
+// Compact manifests can be much larger than a single dashboard inbox item and
+// are diagnostic only. The bound resources still subscribe to their /state
+// topics and retain their normal freshness semantics.
+#define NM_ENABLE_REMOTE_RESOURCE_VERIFICATION 0
+
+// Keep USB console access available independently of the gateway.
 #define NM_CONSOLE_SERIAL 1
 #define NM_CONSOLE_BUILTINS 1
 
-// OTA, on src/OtaDual.csv's two 0x1F0000 slots. The firmware was cut to fit
-// them: 160,944 bytes of image data came out of it, leaving 25,077 bytes of
-// slot free with OTA compiled in -- 1.2%. That is the flash budget from here
-// on, and it does not grow.
-//
-// The flash was never the hard part. ArduinoOTA holds a 4KB task stack, an mDNS
-// responder and a UDP listener from boot to power-off, out of the same heap the
-// TLS handshake cannot currently find 32KB of contiguous space in. This panel
-// reaches 244 bytes free once it has joined the network; OTA makes that worse
-// permanently, not only while an update is running.
-//
-// Tried on hardware, 2026-09-23, and turned back off. It was the difference
-// between a panel that connects and one that does not:
-//
-//                        free at [net] start   outcome
-//   NM_ENABLE_OTA 0            135,008         reaches 'mqtt up', free=5,040
-//   NM_ENABLE_OTA 1            132,612         never connects
-//
-// With it on the handshake drives the heap to largest=388 and fails with
-// mbedtls_ssl_handshake -0x2880, which is MBEDTLS_ERR_X509_ALLOC_FAILED --
-// mbedTLS naming the out-of-memory outright rather than reporting it as the
-// -0x2700 cert-verify failure it used to. ~2.4KB of static RAM plus the OTA
-// task's 4KB stack, mDNS and the UDP listener was the whole margin.
-//
-// The flash work stands: src/OtaDual.csv's two 0x1F0000 slots are in place and
-// the firmware fits them with 55,284 bytes spare. This is the only line that
-// needs changing once the panel has heap to spare -- which means fixing the
-// TLS record buffers, since nothing else on this board is worth 32KB.
+// OTA remains off for this first ESP-NOW deployment. The dual-slot partition is
+// already in place; enable this only after an on-device memory and upload test.
 #define NM_ENABLE_OTA 0
 // Nothing serves pages from the wall, and both cost heap and a task.
 #define NM_ENABLE_HTTP 0

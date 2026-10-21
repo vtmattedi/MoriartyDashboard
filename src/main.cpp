@@ -15,7 +15,7 @@
 // NightMare Network wall dashboard.
 //
 // A panel with no hardware of its own: it joins the network as an ordinary
-// NightMare device, watches every device and resource on the broker, and drives
+// NightMare device, watches every device and resource through the gateway, and drives
 // an AC, a light and a colour light that live on other devices. See App/Net.h
 // for how messages are routed and App/Targets.h for how the bindings are stored.
 
@@ -28,7 +28,7 @@
 ///   TARGET RGB Sherlock             bind the colour role, default resource name
 ///   TARGET LIGHT ""                 unbind
 ///
-/// Device and resource names keep their original casing on purpose: MQTT topic
+/// Device and resource names keep their original casing on purpose: topic
 /// segments are case-sensitive, so "Micro" and "micro" are two different
 /// devices.
 static NightMareResults handleTargetCommand(const NightMareMessage &message)
@@ -37,9 +37,7 @@ static NightMareResults handleTargetCommand(const NightMareMessage &message)
 
     if (!message.subcommand.length())
     {
-        // The snapshot rather than the bindings themselves: a command that came
-        // in over MQTT is running on the MQTT task, and copying a String that
-        // loop() may be reallocating is how that goes wrong.
+        // Use the snapshot so serial, ESP-NOW and UI callers share one path.
         char summary[256];
         Targets_summaryJson(summary, sizeof(summary));
         res.response = summary;
@@ -64,9 +62,8 @@ static NightMareResults handleTargetCommand(const NightMareMessage &message)
         return res;
     }
 
-    // Staged rather than applied: a command that arrived over MQTT is running
-    // on the MQTT client's task, and the bindings belong to loop(). Net_loop()
-    // picks it up within a few milliseconds.
+    // Staged rather than applied so every command source changes bindings at
+    // the same point in Net_loop().
     //
     // args[0] is the subcommand, so the device is args[1] and the resource
     // args[2]. An omitted resource keeps whatever the slot already had, which
@@ -112,10 +109,9 @@ static NightMareResults localHandleNightMareCommand(const NightMareMessage &mess
         NightMareResults res;
         res.result = true;
         // The 8-bit heap, which is the one anything can allocate from. Largest
-        // free block matters as much as the total: mbedTLS needs its handshake
-        // buffers contiguous, and a fragmented heap fails even when the total
-        // looks comfortable. `internalFree` is what ESP.getFreeHeap() reports,
-        // IRAM included; it is here to be compared against, not acted on.
+        // Largest free block matters as much as the total for LVGL and network
+        // buffers. `internalFree` is what ESP.getFreeHeap() reports, IRAM
+        // included; it is here for comparison.
         res.response = String("{\"free\":") + Heap_free() +
                        ",\"minFree\":" + Heap_minFree() +
                        ",\"largestBlock\":" + Heap_largest() +
@@ -152,20 +148,8 @@ static NightMareResults localHandleNightMareCommand(const NightMareMessage &mess
 
 static bool networkStarted = false;
 
-/// Joining the network needs a lot of heap at once, and the expensive part is
-/// out of the panel's hands: the library brings MQTT up from inside the WiFi
-/// task on the first connection, and the IDF client duplicates its config (root
-/// CA included) before mbedTLS asks for tens of KB *contiguous* for the
-/// handshake. Short of that, esp_mqtt_client_init() does not fail cleanly -- it
-/// hands back a half-built handle and the first publish dereferences a null,
-/// panicking the core and boot-looping the panel.
-///
-/// So the check moved to the last point the panel still controls: WiFi is not
-/// started at all until there is room for what follows it. That is a weaker
-/// guarantee than checking immediately before the handshake -- association
-/// itself costs heap in between -- but it is the difference between a panel
-/// sitting on the wall with a red MQTT icon, which is debuggable, and a reboot
-/// loop, which is not.
+/// Start after LVGL and the application resources exist. ESP-NOW has no TLS
+/// handshake and therefore no longer needs the old 60KB/20KB MQTT heap gate.
 static void tryStartNetwork()
 {
     if (networkStarted)
@@ -173,38 +157,18 @@ static void tryStartNetwork()
         return;
     }
 
-    // Both tests, and both against the 8-bit heap: the handshake needs roughly
-    // 50-60KB in total and two 16KB record buffers *contiguous*, so a
-    // fragmented heap fails it while the total still looks comfortable. This
-    // used to read ESP.getFreeHeap(), which counts IRAM the handshake cannot
-    // touch -- see App/Heap.h.
     const size_t freeHeap = Heap_free();
     const size_t largestBlock = Heap_largest();
-    const size_t requiredHeap = 60 * 1024;
-    const size_t requiredBlock = 20 * 1024;
-    if (freeHeap < requiredHeap || largestBlock < requiredBlock)
-    {
-        static uint32_t lastComplaintMs = 0;
-        if (millis() - lastComplaintMs > 5000)
-        {
-            lastComplaintMs = millis();
-            Serial.printf("[net] deferred: %u free / %u largest, need %u / %u\n",
-                          (unsigned)freeHeap, (unsigned)largestBlock,
-                          (unsigned)requiredHeap, (unsigned)requiredBlock);
-        }
-        return;
-    }
-
     Serial.printf("[net] starting with %u free / %u largest\n",
                   (unsigned)freeHeap, (unsigned)largestBlock);
     networkStarted = true;
-    // Temporary: trace the heap across association, MQTT init and the
-    // handshake. Started before, not after, or the expensive part is over
-    // before the first sample.
+    // Trace association, gateway discovery and the first subscription replay.
     Net_traceStartup();
-    // Scheduler, telemetry and WiFi_Auto(); the first WiFi connection then
-    // starts MQTT and SNTP.
+    // Starts the shared radio, ESP-NOW, the Wi-Fi IP station and SNTP.
     startNightMareESP();
+    // Claim the ESP-NOW message callback immediately, before a fast gateway can
+    // replay the dashboard's wildcard subscriptions.
+    Net_loop();
 }
 
 void setup()

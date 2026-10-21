@@ -26,13 +26,13 @@ namespace
 
     // Static storage: the resource manager keeps non-owning pointers to these
     // for the life of the panel.
-    RemoteSensor<int8_t> acState;
-    RemoteSensor<bool> acKnown;
-    RemoteSensor<uint32_t> acSleepDeadline;
-    RemoteSensor<float> acRoomTemperature;
-    RemoteState<bool> acPower;
-    RemoteState<uint8_t> acUnitTemperature;
-    RemoteState<float> acTarget;
+    RemoteSensor<int8_t> acState{ResState};
+    RemoteSensor<bool> acKnown{ResKnown};
+    RemoteSensor<uint32_t> acSleepDeadline{ResSleepDeadline};
+    RemoteSensor<float> acRoomTemperature{ResRoomTemperature};
+    RemoteState<bool> acPower{ResPower};
+    RemoteState<uint8_t> acUnitTemperature{ResUnitTemperature};
+    RemoteState<float> acTarget{ResTarget};
 
     // Declared as schemas the panel expects, not as a claim to mirror the
     // controller's: a mismatch is logged by the library and changes nothing.
