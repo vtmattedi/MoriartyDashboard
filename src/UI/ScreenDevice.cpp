@@ -1,11 +1,12 @@
 #include "Screens.h"
+#include "Sys.h"
 #include "Theme.h"
 #include "Ui.h"
 
-#include "../App/Registry.h"
-#include "../App/Targets.h"
-#include "../App/Net.h"
-#include "../App/Mqttp.h"
+#include "App/Registry.h"
+#include "App/Targets.h"
+#include "App/Net.h"
+#include "App/Mqttp.h"
 
 #include <boardstuff.h>
 #include <ArduinoJson.h>
@@ -41,13 +42,14 @@ namespace
     lv_obj_t *titleLabel = nullptr;
     lv_obj_t *statusChip = nullptr;
     lv_obj_t *acButton = nullptr;
-    lv_obj_t *unbindButton = nullptr;
+    lv_obj_t *pcButton = nullptr;
+    lv_obj_t *rgbButton = nullptr;
     lv_obj_t *actionButton = nullptr;
     lv_obj_t *queryButtons[3] = {nullptr};
     lv_obj_t *resultTitle = nullptr;
     lv_obj_t *resultBody = nullptr;
 
-    String deviceName;
+    std::string deviceName;
     bool actionArmed = false;
     uint32_t lastSeenRevision = 0;
 
@@ -64,10 +66,10 @@ namespace
 
     /// LVGL's recolor markup is delimited by '#', so a '#' inside a value would
     /// be read as markup and swallow the rest of the line.
-    String sanitize(const String &raw)
+    std::string sanitize(const std::string &raw)
     {
-        String out = raw;
-        out.replace("#", "*");
+        std::string out = raw;
+        Text::replaceAll(out, "#", "*");
         return out;
     }
 
@@ -75,7 +77,7 @@ namespace
     /// Keys are dimmed with recolor markup so the whole response can live in a
     /// single label -- one widget instead of a row pool of three per entry,
     /// which on this board is the difference that matters.
-    void flatten(JsonVariantConst value, const String &prefix, String &out, int depth)
+    void flatten(JsonVariantConst value, const std::string &prefix, std::string &out, int depth)
     {
         if (depth > 4)
         {
@@ -86,8 +88,8 @@ namespace
         {
             for (JsonPairConst entry : value.as<JsonObjectConst>())
             {
-                const String key = prefix.length() ? prefix + "." + entry.key().c_str()
-                                                   : String(entry.key().c_str());
+                const std::string key = prefix.length() ? prefix + "." + entry.key().c_str()
+                                                   : std::string(entry.key().c_str());
                 flatten(entry.value(), key, out, depth + 1);
             }
             return;
@@ -98,7 +100,7 @@ namespace
             int index = 0;
             for (JsonVariantConst item : value.as<JsonArrayConst>())
             {
-                flatten(item, prefix + "[" + index + "]", out, depth + 1);
+                flatten(item, prefix + "[" + std::to_string(index) + "]", out, depth + 1);
                 index++;
             }
             return;
@@ -107,7 +109,7 @@ namespace
         out += "#8a97a8 ";
         out += sanitize(prefix);
         out += "#  ";
-        out += sanitize(value.as<String>());
+        out += sanitize(value.as<std::string>());
         out += "\n";
     }
 
@@ -157,7 +159,7 @@ namespace
         JsonDocument parseDoc;
         const DeserializationError error = deserializeJson(parseDoc, Mqttp_response());
 
-        String text;
+        std::string text;
         if (error || parseDoc.isNull() ||
             (!parseDoc.is<JsonObjectConst>() && !parseDoc.is<JsonArrayConst>()))
         {
@@ -185,6 +187,11 @@ namespace
 
 #pragma region "Events"
 
+    void onResources(lv_event_t *event)
+    {
+        ScreenSensors_open(deviceName);
+    }
+
     void onBack(lv_event_t *event)
     {
         // The answer and the subscription are dropped by ScreenDevice_release(),
@@ -192,15 +199,32 @@ namespace
         Ui_show(UI_PAGE_DEVICES);
     }
 
-    /// The AC is the one role bound here, because it is the one that claims a
-    /// whole device: its nine resources are a published contract, so naming the
-    /// device names all of them. The light and the colour are single resources
-    /// with no agreed names, so they are bound on the Resources screen instead,
-    /// where what is actually being pointed at is visible.
+    /// The AC, the PC link and the RGB light are the roles bound here: each is a
+    /// device with a published contract (the AC's resources, the PC's, an
+    /// `rgb` colour), so naming the device names all of it. The plain light
+    /// is a single resource with no agreed name, so it is bound on the
+    /// resource's own page, where what is being pointed at is visible.
+    ///
+    /// Each button is a toggle: lit means this device fills that role, and
+    /// tapping a lit one takes the role away again.
     void onRole(lv_event_t *event)
     {
-        const bool bind = (bool)(intptr_t)lv_event_get_user_data(event);
-        Targets_setDevice(TARGET_SLOT_AC, bind ? deviceName : String(""));
+        const TargetSlot slot = (TargetSlot)(intptr_t)lv_event_get_user_data(event);
+        const bool bound = Targets_configured(slot) && Targets_device(slot) == deviceName;
+        if (bound)
+        {
+            Targets_setDevice(slot, "");
+        }
+        else if (Targets_defaultResource(slot)[0])
+        {
+            // A device role is the contract's own resource name, whatever the
+            // slot pointed at before.
+            Targets_set(slot, deviceName, Targets_defaultResource(slot));
+        }
+        else
+        {
+            Targets_setDevice(slot, deviceName);
+        }
         Ui_markDirty();
     }
 
@@ -266,8 +290,8 @@ namespace
         return Theme_label(parent, text, &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
     }
 
-    /// Width inside a column card, after its padding.
-    const lv_coord_t CardInner = UI_COL_W - 22;
+    /// Width inside a card, after its padding.
+    const lv_coord_t CardInner = UI_CARD_INNER;
 }
 
 lv_obj_t *ScreenDevice_create(lv_obj_t *parent)
@@ -280,67 +304,77 @@ lv_obj_t *ScreenDevice_create(lv_obj_t *parent)
     lv_obj_set_style_pad_all(page, UI_GUTTER, LV_PART_MAIN);
     lv_obj_set_style_pad_row(page, UI_GUTTER, LV_PART_MAIN);
 
-    // The header spans both columns: with only 230px of height, giving it a row
-    // inside the left card left no room for the buttons underneath it.
+    // Top to bottom: the header, what can be done to the device, the three
+    // questions, and the answer -- which takes whatever height is left and
+    // scrolls inside it, so a long reply never pushes the buttons off the top.
     lv_obj_t *header = Theme_row(page, UI_CARD_W, LV_SIZE_CONTENT);
     lv_obj_t *back = Theme_button(header, LV_SYMBOL_LEFT, 44, 32);
     lv_obj_add_event_cb(back, onBack, LV_EVENT_CLICKED, nullptr);
 
     titleLabel = Theme_label(header, "", &lv_font_montserrat_16, UI_COL_TEXT);
     lv_label_set_long_mode(titleLabel, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(titleLabel, UI_CARD_W - 200);
+    lv_obj_set_width(titleLabel, UI_CARD_W - 150);
     lv_obj_set_style_text_align(titleLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
     statusChip = Theme_chip(header);
 
-    // An explicit height rather than flex_grow: the cards inside are LV_PCT(100)
-    // tall, and a percentage of a height the layout has not resolved yet is
-    // circular -- LVGL settles that unpredictably.
+    // What can be done to the device. Every height in this card is explicit,
+    // hint included, so the answer card below can be given exactly the rest of
+    // the page: a flex_grow there would have LVGL sizing a scrolling card
+    // against a height it is still working out.
     const lv_coord_t headerHeight = 32;
-    const lv_coord_t bodyHeight = UI_CONTENT_H - (2 * UI_GUTTER) - headerHeight - UI_GUTTER;
-    lv_obj_t *body = Theme_row(page, UI_CARD_W, bodyHeight);
-    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    const lv_coord_t actionsRowGap = 5;
+    const lv_coord_t sectionHeight = 17;
+    const lv_coord_t hintHeight = 17;
+    const lv_coord_t actionButtonHeight = 38;
+    const lv_coord_t actionsHeight = 22 + sectionHeight + hintHeight +
+                                     (2 * actionButtonHeight) + (3 * actionsRowGap);
 
-    // Left: what can be done to the device.
-    lv_obj_t *left = Theme_card(body, UI_COL_W, LV_PCT(100));
-    lv_obj_set_style_pad_row(left, 5, LV_PART_MAIN);
+    lv_obj_t *left = Theme_card(page, UI_CARD_W, actionsHeight);
+    lv_obj_set_style_pad_row(left, actionsRowGap, LV_PART_MAIN);
 
-    sectionLabel(left, "Bind this panel's controls to");
-    acButton = Theme_button(left, "Air conditioning", CardInner, 38);
-    lv_obj_add_event_cb(acButton, onRole, LV_EVENT_CLICKED, (void *)(intptr_t) true);
+    lv_obj_t *section = sectionLabel(left, "Bind this panel's controls to");
+    lv_obj_set_height(section, sectionHeight);
 
-    lv_obj_t *hint = Theme_label(left, "Lights are bound per resource, under Resources.",
+    // The two whole-device roles, side by side.
+    const lv_coord_t half = (CardInner - 8) / 2;
+    lv_obj_t *roleRow = Theme_row(left, CardInner, actionButtonHeight);
+    const lv_coord_t third = (CardInner - 12) / 3;
+    acButton = Theme_button(roleRow, "AC", third, actionButtonHeight);
+    lv_obj_add_event_cb(acButton, onRole, LV_EVENT_CLICKED, (void *)(intptr_t)TARGET_SLOT_AC);
+
+    pcButton = Theme_button(roleRow, "PC", third, actionButtonHeight);
+    lv_obj_add_event_cb(pcButton, onRole, LV_EVENT_CLICKED, (void *)(intptr_t)TARGET_SLOT_PC);
+
+    rgbButton = Theme_button(roleRow, "Bed", third, actionButtonHeight);
+    lv_obj_add_event_cb(rgbButton, onRole, LV_EVENT_CLICKED, (void *)(intptr_t)TARGET_SLOT_RGB);
+
+    lv_obj_t *hint = Theme_label(left, "Lit is bound; tap again to unbind.",
                                  &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, CardInner);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(hint, CardInner, hintHeight);
 
-    unbindButton = Theme_button(left, "Unbind the AC", CardInner, 32);
-    lv_obj_add_event_cb(unbindButton, onRole, LV_EVENT_CLICKED, (void *)(intptr_t) false);
-
-    // The one action on the device itself rather than on this panel.
-    actionButton = Theme_button(left, "", CardInner, 40);
+    // Its resources, and the one action on the device itself rather than on
+    // this panel.
+    lv_obj_t *lowerRow = Theme_row(left, CardInner, actionButtonHeight);
+    lv_obj_t *resourcesButton = Theme_button(lowerRow, LV_SYMBOL_LIST "  Resources", half, actionButtonHeight);
+    lv_obj_add_event_cb(resourcesButton, onResources, LV_EVENT_CLICKED, nullptr);
+    actionButton = Theme_button(lowerRow, "", half, actionButtonHeight);
     lv_obj_add_event_cb(actionButton, onAction, LV_EVENT_CLICKED, nullptr);
 
-    // Right: the questions, and the answer under them. They sit in a plain column
-    // rather than inside the card, because the card scrolls -- put them in it and
-    // a long reply would push the buttons off the top.
-    lv_obj_t *rightColumn = Theme_column(body, UI_COL_W, LV_PCT(100));
-    lv_obj_set_flex_align(rightColumn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
+    // The questions sit outside the answer card, because the card scrolls.
     const lv_coord_t queryHeight = 38;
-    lv_obj_t *queries = Theme_row(rightColumn, UI_COL_W, queryHeight);
+    lv_obj_t *queries = Theme_row(page, UI_CARD_W, queryHeight);
     for (int i = 0; i < QueryCount; ++i)
     {
-        queryButtons[i] = Theme_button(queries, Queries[i].label, (UI_COL_W - 12) / 3, queryHeight);
+        queryButtons[i] = Theme_button(queries, Queries[i].label, (UI_CARD_W - 12) / 3, queryHeight);
         lv_obj_add_event_cb(queryButtons[i], onQuery, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 
-    // An explicit height, for the same reason as `body` above: a percentage of a
-    // height the layout has not resolved yet is circular.
-    lv_obj_t *answer = Theme_card(rightColumn, UI_COL_W, bodyHeight - queryHeight - UI_GUTTER);
-    lv_obj_add_flag(answer, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(answer, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(answer, LV_SCROLLBAR_MODE_AUTO);
+    const lv_coord_t answerHeight = UI_PAGE_H - headerHeight - actionsHeight - queryHeight -
+                                    (3 * UI_GUTTER);
+    lv_obj_t *answer = Theme_card(page, UI_CARD_W, answerHeight);
+    Theme_scrollVertical(answer, true);
 
     resultTitle = Theme_label(answer, "", &lv_font_montserrat_14, UI_COL_ACCENT);
 
@@ -365,9 +399,11 @@ void ScreenDevice_release()
     lastSeenRevision = 0;
 }
 
-void ScreenDevice_open(const String &name)
+void ScreenDevice_open(const std::string &name)
 {
     deviceName = name;
+    // Receive this device's resources while its pages are up.
+    Net_watchDevice(name);
     actionArmed = false;
     lastSeenRevision = 0;
     // Start listening now rather than when a button is tapped. A subscription
@@ -395,21 +431,22 @@ void ScreenDevice_refresh()
                       online ? UI_COL_OK : UI_COL_DANGER);
     }
 
-    // Only the AC is bound here, so only the AC is shown here. A device that
-    // also owns the bound light or colour says nothing about it on this page --
-    // that binding is a resource, and the Resources screen is where it lives.
+    // Only whole-device roles are bound here, so only those are shown here. A
+    // device that also owns the bound light or colour says nothing about it on
+    // this page -- that binding is a resource, and the Resources screen is
+    // where it lives.
     const bool isAc = Targets_isAc(deviceName);
     lv_obj_set_style_border_color(acButton, isAc ? UI_COL_ACCENT : UI_COL_BORDER, LV_PART_MAIN);
     lv_obj_set_style_text_color(acButton, isAc ? UI_COL_ACCENT : UI_COL_TEXT, LV_PART_MAIN);
 
-    if (isAc)
-    {
-        lv_obj_clear_flag(unbindButton, LV_OBJ_FLAG_HIDDEN);
-    }
-    else
-    {
-        lv_obj_add_flag(unbindButton, LV_OBJ_FLAG_HIDDEN);
-    }
+    const bool isPc = Targets_configured(TARGET_SLOT_PC) &&
+                      Targets_device(TARGET_SLOT_PC) == deviceName;
+    lv_obj_set_style_border_color(pcButton, isPc ? UI_COL_ACCENT : UI_COL_BORDER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(pcButton, isPc ? UI_COL_ACCENT : UI_COL_TEXT, LV_PART_MAIN);
+
+    const bool isRgb = Targets_configured(TARGET_SLOT_RGB) && Targets_device(TARGET_SLOT_RGB) == deviceName;
+    lv_obj_set_style_border_color(rgbButton, isRgb ? UI_COL_ACCENT : UI_COL_BORDER, LV_PART_MAIN);
+    lv_obj_set_style_text_color(rgbButton, isRgb ? UI_COL_ACCENT : UI_COL_TEXT, LV_PART_MAIN);
 
     // Reboot and delete are never both useful: rebooting something already
     // offline does nothing, and deleting something still publishing only makes

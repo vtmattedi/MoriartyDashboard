@@ -1,12 +1,14 @@
 #include "Screens.h"
+#include "Sys.h"
 #include "Theme.h"
 
-#include "../App/Net.h"
-#include "../App/Targets.h"
-#include "../App/Forecast.h"
-#include "../App/SensorBindings.h"
-#include "../App/AcClient.h"
-#include "../App/LightControl.h"
+#include "App/Net.h"
+#include "App/Targets.h"
+#include "App/Forecast.h"
+#include "App/SensorBindings.h"
+#include "App/AcClient.h"
+#include "App/LightControl.h"
+#include "App/Battery.h"
 
 #include <boardstuff.h>
 #include <NightMare.h>
@@ -17,13 +19,18 @@
 
 // The resting screen: what the panel looks like when nobody is using it.
 //
-// A dimmed mark and a clock big enough to read across the room, with the corners
-// carrying what is worth knowing at a glance:
+// The second of the three power stages (see Ui.h): the backlight is dimmed but
+// the panel is still on the network, so everything here is live.
 //
-//   top-left      anything wrong -- door open, no WiFi, no broker
+// A dimmed mark and a clock big enough to read across the room -- hours above
+// minutes, because four 120px digits side by side are wider than the 320px the
+// screen has in portrait -- with the corners carrying what is worth knowing at a
+// glance:
+//
+//   top-left      anything wrong -- door open, battery low, no WiFi, no gateway
 //   top-right     temperatures, outside and in the room
 //   bottom-left   a resource of your choosing (pick it on the Resources screen)
-//   bottom-right  what is switched on
+//   bottom-right  what is switched on, and the battery
 //
 // Any touch is swallowed by the manager to wake the panel, so nothing here is
 // interactive.
@@ -37,9 +44,8 @@ namespace
 {
     lv_obj_t *overlay = nullptr;
     lv_obj_t *hoursLabel = nullptr;
-    lv_obj_t *colonLabel = nullptr;
     lv_obj_t *minutesLabel = nullptr;
-    lv_obj_t *clockRow = nullptr;
+    lv_obj_t *clockColumn = nullptr;
     lv_obj_t *dateLabel = nullptr;
 
     lv_obj_t *cornerWarnings = nullptr;
@@ -52,9 +58,9 @@ namespace
     // digits are only touched when a digit actually changes.
     int shownHour = -1;
     int shownMinute = -1;
-    int shownColon = -1;
 
-    const lv_coord_t CornerWidth = 190;
+    // Two corners side by side have to fit across the screen with a gap between.
+    const lv_coord_t CornerWidth = 144;
     const lv_coord_t CornerInset = 12;
 
     const char *const WeekdayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday",
@@ -84,16 +90,6 @@ namespace
         used += (size_t)written < (size - used) ? (size_t)written : (size - used - 1);
     }
 
-    void setColonVisible(bool visible)
-    {
-        if (shownColon == (int)visible)
-        {
-            return;
-        }
-        shownColon = visible;
-        lv_obj_set_style_text_opa(colonLabel, visible ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
-    }
-
     /// One corner: a small wrapped, recolourable label.
     lv_obj_t *makeCorner(lv_obj_t *parent, lv_align_t align, lv_coord_t dx, lv_coord_t dy,
                          lv_text_align_t textAlign)
@@ -111,10 +107,10 @@ namespace
     /// Values come from device names and sensor keys, which cannot contain '#'
     /// (it is an MQTT wildcard, not allowed in a published topic) -- but a
     /// reading can, so anything interpolated is stripped of the recolour marker.
-    String safe(const String &raw)
+    std::string safe(const std::string &raw)
     {
-        String out = raw;
-        out.replace("#", "*");
+        std::string out = raw;
+        Text::replaceAll(out, "#", "*");
         return out;
     }
 
@@ -146,26 +142,25 @@ lv_obj_t *ScreenRest_create(lv_obj_t *parent)
     lv_obj_center(logo);
     lv_obj_set_style_img_opa(logo, LV_OPA_20, LV_PART_MAIN);
 
-    // Hours, colon and minutes as three labels, not one "HH:MM" string. The
-    // blink is done by fading the colon rather than by swapping it for a space
-    // the way LIVE_TIME_STR does: a space is narrower than a colon, so a centred
-    // single label would shift sideways every second -- invisible at 16px,
-    // obvious at 120px. Same rule for when it blinks, though: hidden on even
-    // seconds.
-    clockRow = lv_obj_create(overlay);
-    Theme_plainContainer(clockRow);
-    lv_obj_clear_flag(clockRow, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_size(clockRow, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(clockRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(clockRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_align(clockRow, LV_ALIGN_CENTER, 0, -14);
+    // Hours over minutes, two labels in a column. There is no colon and so
+    // nothing blinks: stacked, the two numbers need no separator, and a screen
+    // that stays up for hours on a battery is better off not redrawing anything
+    // once a second. The minutes are dimmer, which is what tells the two apart
+    // at a glance.
+    clockColumn = lv_obj_create(overlay);
+    Theme_plainContainer(clockColumn);
+    lv_obj_clear_flag(clockColumn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(clockColumn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(clockColumn, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(clockColumn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(clockColumn, 14, LV_PART_MAIN);
+    lv_obj_align(clockColumn, LV_ALIGN_CENTER, 0, -14);
 
-    hoursLabel = Theme_label(clockRow, "--", &font_clock_120, UI_COL_TEXT);
-    colonLabel = Theme_label(clockRow, ":", &font_clock_120, UI_COL_TEXT);
-    minutesLabel = Theme_label(clockRow, "--", &font_clock_120, UI_COL_TEXT);
+    hoursLabel = Theme_label(clockColumn, "--", &font_clock_120, UI_COL_TEXT);
+    minutesLabel = Theme_label(clockColumn, "--", &font_clock_120, UI_COL_TEXT_DIM);
 
     dateLabel = Theme_label(overlay, "", &lv_font_montserrat_16, UI_COL_TEXT_DIM);
-    lv_obj_align_to(dateLabel, clockRow, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
+    lv_obj_align_to(dateLabel, clockColumn, LV_ALIGN_OUT_BOTTOM_MID, 0, 14);
 
     cornerWarnings = makeCorner(overlay, LV_ALIGN_TOP_LEFT, CornerInset, CornerInset, LV_TEXT_ALIGN_LEFT);
     cornerTemps = makeCorner(overlay, LV_ALIGN_TOP_RIGHT, -CornerInset, CornerInset, LV_TEXT_ALIGN_RIGHT);
@@ -181,7 +176,6 @@ void ScreenRest_refresh()
     {
         Theme_setText(hoursLabel, "--");
         Theme_setText(minutesLabel, "--");
-        setColonVisible(true);
         shownHour = shownMinute = -1;
         Theme_setText(dateLabel, "waiting for time sync");
     }
@@ -204,18 +198,15 @@ void ScreenRest_refresh()
             lv_label_set_text(minutesLabel, digits);
         }
 
-        // The same rule the library's OnlyTimeLive format uses.
-        setColonVisible((epoch & 1) != 0);
-
         char date[48];
         snprintf(date, sizeof(date), "%s, %d %s",
                  WeekdayNames[parts.tm_wday], parts.tm_mday, MonthNames[parts.tm_mon]);
         Theme_setText(dateLabel, date);
     }
 
-    // The date sits under the clock, and the clock row's width follows its digits
-    // ("11" is narrower than "20"), so keep them lined up.
-    lv_obj_align_to(dateLabel, clockRow, LV_ALIGN_OUT_BOTTOM_MID, 0, 10);
+    // The date is centred under the clock, and its own width changes with the
+    // day's name, so it is placed again whenever its text is.
+    lv_obj_align_to(dateLabel, clockColumn, LV_ALIGN_OUT_BOTTOM_MID, 0, 14);
 
     char buffer[160];
     size_t used = 0;
@@ -227,6 +218,11 @@ void ScreenRest_refresh()
     if (SensorBindings_doorState() == DOOR_OPEN)
     {
         appendf(buffer, sizeof(buffer), used, "#ffc64b " LV_SYMBOL_WARNING " Door open#");
+    }
+    if (Battery_low())
+    {
+        appendf(buffer, sizeof(buffer), used, "%s#f2566a " LV_SYMBOL_BATTERY_EMPTY " Battery %u%%#",
+                used ? "\n" : "", (unsigned)Battery_percent());
     }
     if (WiFi_state() != NightMare::WiFiState::CONNECTED)
     {
@@ -246,12 +242,12 @@ void ScreenRest_refresh()
     const ForecastData &weather = Forecast_get();
     if (weather.hasTemp)
     {
-        appendf(buffer, sizeof(buffer), used, "#8a97a8 outside#  %.1f\xC2\xB0", weather.temp);
+        appendf(buffer, sizeof(buffer), used, "#8a97a8 outside#  %.1f" DEG, weather.temp);
     }
     float roomTemperature = 0;
     if (Targets_configured(TARGET_SLOT_AC) && AcClient_roomTemperature(roomTemperature))
     {
-        appendf(buffer, sizeof(buffer), used, "%s#8a97a8 room#  %.1f\xC2\xB0",
+        appendf(buffer, sizeof(buffer), used, "%s#8a97a8 room#  %.1f" DEG,
                 used ? "\n" : "", roomTemperature);
     }
     Theme_setText(cornerTemps, buffer);
@@ -259,7 +255,7 @@ void ScreenRest_refresh()
     // Bottom left: whatever sensor was pinned here.
     if (SensorBindings_isBound(SENSOR_SLOT_REST))
     {
-        const String value = SensorBindings_value(SENSOR_SLOT_REST);
+        const std::string value = SensorBindings_value(SENSOR_SLOT_REST);
         snprintf(buffer, sizeof(buffer), "#8a97a8 %s#\n%s",
                  safe(SensorBindings_resource(SENSOR_SLOT_REST)).c_str(),
                  value.length() ? safe(value).c_str() : "--");
@@ -280,6 +276,13 @@ void ScreenRest_refresh()
     if (Rgb_on())
     {
         appendf(buffer, sizeof(buffer), used, "%s#ff9849 " LV_SYMBOL_TINT " RGB#", used ? "\n" : "");
+    }
+    // Last, so it sits on the bottom line whatever else is on: the one thing a
+    // handheld panel is always asked.
+    if (Battery_present())
+    {
+        appendf(buffer, sizeof(buffer), used, "%s#8a97a8 " LV_SYMBOL_BATTERY_3 " %u%%#",
+                used ? "\n" : "", (unsigned)Battery_percent());
     }
     Theme_setText(cornerState, buffer);
 }

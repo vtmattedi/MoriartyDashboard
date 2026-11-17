@@ -1,4 +1,5 @@
 #include "Theme.h"
+#include "Sys.h"
 #include <boardstuff.h>
 #include <string.h>
 
@@ -72,6 +73,13 @@ void Theme_plainContainer(lv_obj_t *obj)
     lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
+}
+
+void Theme_scrollVertical(lv_obj_t *obj, bool scrollbar)
+{
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(obj, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(obj, scrollbar ? LV_SCROLLBAR_MODE_AUTO : LV_SCROLLBAR_MODE_OFF);
 }
 
 lv_obj_t *Theme_card(lv_obj_t *parent, lv_coord_t width, lv_coord_t height)

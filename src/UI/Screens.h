@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 #include <lvgl.h>
 
 // Internal contract between the screen manager (Ui.cpp) and the individual
@@ -10,6 +13,17 @@
 
 lv_obj_t *StatusBar_create(lv_obj_t *parent);
 void StatusBar_refresh();
+
+/// @brief The page title in the top bar, and whether the back arrow shows.
+void StatusBar_setTitle(const char *title, bool back);
+
+lv_obj_t *ScreenMenu_create(lv_obj_t *parent);
+void ScreenMenu_refresh();
+/// @brief Back to the first page of tiles. Called when the menu is left or the panel rests.
+void ScreenMenu_home();
+
+/// @brief Back to the first settings page, so it opens the same way every time.
+void ScreenSettings_home();
 
 lv_obj_t *ScreenFocus_create(lv_obj_t *parent);
 void ScreenFocus_refresh();
@@ -22,6 +36,9 @@ lv_obj_t *ScreenDevices_create(lv_obj_t *parent);
 void ScreenDevices_refresh();
 
 lv_obj_t *ScreenSensors_create(lv_obj_t *parent);
+
+/// @brief Show one device's resources (the panel starts receiving them with its page).
+void ScreenSensors_open(const std::string &deviceName);
 void ScreenSensors_refresh();
 
 /// @brief Free what a page only needs while visible: list rows, a device's
@@ -37,17 +54,30 @@ void ScreenResource_release();
 lv_obj_t *ScreenSettings_create(lv_obj_t *parent);
 void ScreenSettings_refresh();
 
+enum SettingsPage
+{
+    SETTINGS_PAGE_DISPLAY = 0,
+    SETTINGS_PAGE_POWER,
+    SETTINGS_PAGE_NETWORK,
+    SETTINGS_PAGE_UPDATE,
+    SETTINGS_PAGE_SYSTEM,
+    SETTINGS_PAGE_COUNT
+};
+
+/// @brief Show the settings, on the given page of them.
+void ScreenSettings_open(int page);
+
 lv_obj_t *ScreenDevice_create(lv_obj_t *parent);
 void ScreenDevice_refresh();
 
 /// @brief Point the detail page at a device, before showing it.
-void ScreenDevice_open(const String &deviceName);
+void ScreenDevice_open(const std::string &deviceName);
 
 lv_obj_t *ScreenResource_create(lv_obj_t *parent);
 void ScreenResource_refresh();
 
 /// @brief Point the resource page at one address, before showing it.
-void ScreenResource_open(const String &deviceName, const String &resourceName);
+void ScreenResource_open(const std::string &deviceName, const std::string &resourceName);
 
 lv_obj_t *ScreenRest_create(lv_obj_t *parent);
 void ScreenRest_refresh();
@@ -63,7 +93,7 @@ void Ui_formatAge(uint32_t stamp, char *out, size_t outSize);
 /// what an AC controller's status document is -- reads as a struct here, and
 /// that is the useful answer, because the question being asked is "will this
 /// fit in a list row".
-bool Ui_valueIsStruct(const String &value);
+bool Ui_valueIsStruct(const std::string &value);
 
 /// @brief Whether there is enough heap left to build another list row.
 ///

@@ -1,23 +1,28 @@
 #include "Screens.h"
+#include "Sys.h"
 #include "Theme.h"
 #include "Ui.h"
+#include "Pager.h"
 
-#include "../App/Registry.h"
-#include "../App/SensorBindings.h"
-#include "../App/Targets.h"
+#include "App/Registry.h"
+#include "App/SensorBindings.h"
+#include "App/Targets.h"
 
 #include <boardstuff.h>
 
-// Every resource the panel has seen on the network, newest value wins.
+// The resources of one device, opened from the device's page. The panel does not
+// keep the resources of the whole network -- only the open device's are
+// subscribed to (Net_watchDevice) -- so this is the one place they are listed.
 //
-// Four reusable rows are kept on screen at once. The registry can hold forty
-// resources, but allocating a set of LVGL objects for every one needlessly
-// competes with TLS for the ESP32's small heap. Previous/next buttons move the
-// same four widgets through the registry instead.
+// Six reusable rows are kept on screen at once -- what the portrait page has
+// room for under its pager. The registry can hold forty resources, but
+// allocating a set of LVGL objects for every one needlessly competes with the
+// network stack for the ESP32's small heap. Previous/next buttons move the same
+// six widgets through the registry instead.
 
 namespace
 {
-    const int RowsPerPage = 4;
+    const int RowsPerPage = 6;
 
     struct ResourceRow
     {
@@ -36,11 +41,45 @@ namespace
     lv_obj_t *pageLabel = nullptr;
     ResourceRow rows[RowsPerPage];
     int firstIndex = 0;
+    std::string filterDevice;
+
+    /// The registry holds this device's resources among a few others (the ones
+    /// bound to roles); these walk just this device's.
+    int matchCount()
+    {
+        int count = 0;
+        for (int i = 0; i < Registry_resourceCount(); ++i)
+        {
+            const ResourceEntry *entry = Registry_resource(i);
+            if (entry && entry->device == filterDevice)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    const ResourceEntry *matchAt(int n)
+    {
+        for (int i = 0; i < Registry_resourceCount(); ++i)
+        {
+            const ResourceEntry *entry = Registry_resource(i);
+            if (entry && entry->device == filterDevice && n-- == 0)
+            {
+                return entry;
+            }
+        }
+        return nullptr;
+    }
 
     void onRowClicked(lv_event_t *event)
     {
+        if (Pager_justSwiped())
+        {
+            return;
+        }
         const int slot = (int)(intptr_t)lv_event_get_user_data(event);
-        const ResourceEntry *entry = Registry_resource(firstIndex + slot);
+        const ResourceEntry *entry = matchAt(firstIndex + slot);
         if (entry)
         {
             // Copy the address before changing pages; registry entries remain
@@ -60,7 +99,7 @@ namespace
 
     void onNextClicked(lv_event_t *)
     {
-        if (firstIndex + RowsPerPage < Registry_resourceCount())
+        if (firstIndex + RowsPerPage < matchCount())
         {
             firstIndex += RowsPerPage;
             Ui_markDirty();
@@ -79,7 +118,7 @@ namespace
         }
     }
 
-    const char *jobLabel(const String &device, const String &resource)
+    const char *jobLabel(const std::string &device, const std::string &resource)
     {
         if (Targets_matches(TARGET_SLOT_LIGHT, device, resource))
         {
@@ -99,7 +138,7 @@ namespace
         return nullptr;
     }
 
-    /// Build one of the four reusable rows if it does not exist yet. Returns
+    /// Build one of the reusable rows if it does not exist yet. Returns
     /// false when the heap is temporarily too tight; a later refresh retries.
     bool ensureRow(int slot)
     {
@@ -128,7 +167,9 @@ namespace
         lv_obj_add_flag(row.root, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row.root, onRowClicked, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
 
-        const lv_coord_t nameWidth = UI_CARD_W - 190;
+        // Whatever the value and the badge beside it leave: the name gives way
+        // first, with an ellipsis, since the resource page has it in full.
+        const lv_coord_t nameWidth = UI_CARD_W - 20 - 150;
 
         row.name = Theme_label(row.root, "", &lv_font_montserrat_14, UI_COL_TEXT);
         lv_label_set_long_mode(row.name, LV_LABEL_LONG_DOT);
@@ -140,11 +181,16 @@ namespace
         lv_obj_set_width(row.device, nameWidth);
         lv_obj_align(row.device, LV_ALIGN_BOTTOM_LEFT, 0, -4);
 
+        // A fixed box, right-aligned inside: a value is whatever a device
+        // chose to publish, and one long string must not run over the name.
         row.value = Theme_label(row.root, "", &lv_font_montserrat_16, UI_COL_ACCENT);
+        lv_label_set_long_mode(row.value, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(row.value, 70);
+        lv_obj_set_style_text_align(row.value, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
         lv_obj_align(row.value, LV_ALIGN_RIGHT_MID, 0, 0);
 
         row.badge = Theme_chip(row.root);
-        lv_obj_align(row.badge, LV_ALIGN_RIGHT_MID, -90, 0);
+        lv_obj_align(row.badge, LV_ALIGN_RIGHT_MID, -76, 0);
         lv_obj_add_flag(row.badge, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_add_flag(row.root, LV_OBJ_FLAG_HIDDEN);
@@ -162,21 +208,31 @@ lv_obj_t *ScreenSensors_create(lv_obj_t *parent)
     lv_obj_set_style_pad_all(page, UI_GUTTER, LV_PART_MAIN);
     lv_obj_set_style_pad_row(page, 4, LV_PART_MAIN);
 
-    // The pager exists for the lifetime of the UI. Only the four comparatively
+    // The pager exists for the lifetime of the UI. Only the comparatively
     // expensive resource rows are released and rebuilt as the screen is used.
     pager = Theme_row(page, UI_CARD_W, 34);
-    previousButton = Theme_button(pager, LV_SYMBOL_LEFT "  Previous", 112, 32);
+    previousButton = Theme_button(pager, LV_SYMBOL_LEFT "  Prev", 88, 32);
     lv_obj_add_event_cb(previousButton, onPreviousClicked, LV_EVENT_CLICKED, nullptr);
 
     pageLabel = Theme_label(pager, "", &lv_font_montserrat_14, UI_COL_TEXT_DIM);
 
-    nextButton = Theme_button(pager, "Next  " LV_SYMBOL_RIGHT, 112, 32);
+    nextButton = Theme_button(pager, "Next  " LV_SYMBOL_RIGHT, 88, 32);
     lv_obj_add_event_cb(nextButton, onNextClicked, LV_EVENT_CLICKED, nullptr);
 
     emptyLabel = Theme_label(page, "No resources heard yet.", &lv_font_montserrat_14,
                              UI_COL_TEXT_DIM);
 
+    static const SwipeHandlers swipe = {[] { onNextClicked(nullptr); }, [] { onPreviousClicked(nullptr); }};
+    Pager_onSwipe(page, &swipe);
+
     return page;
+}
+
+void ScreenSensors_open(const std::string &deviceName)
+{
+    filterDevice = deviceName;
+    firstIndex = 0;
+    Ui_show(UI_PAGE_SENSORS);
 }
 
 void ScreenSensors_release()
@@ -193,7 +249,7 @@ void ScreenSensors_release()
 
 void ScreenSensors_refresh()
 {
-    const int count = Registry_resourceCount();
+    const int count = matchCount();
 
     // Keep the current page valid if resources disappear with a deleted device.
     if (count == 0)
@@ -209,7 +265,7 @@ void ScreenSensors_refresh()
     for (int slot = 0; slot < RowsPerPage; ++slot)
     {
         ResourceRow &row = rows[slot];
-        const ResourceEntry *entry = Registry_resource(firstIndex + slot);
+        const ResourceEntry *entry = matchAt(firstIndex + slot);
         if (!entry)
         {
             if (row.root)
@@ -252,7 +308,8 @@ void ScreenSensors_refresh()
 
     if (count == 0)
     {
-        Theme_setText(emptyLabel, "No resources heard yet.");
+        // Right after opening the device its resources are still on their way.
+        Theme_setText(emptyLabel, ("Waiting for " + filterDevice + "...").c_str());
         lv_obj_clear_flag(emptyLabel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(pager, LV_OBJ_FLAG_HIDDEN);
         return;

@@ -1,14 +1,16 @@
 #include "Screens.h"
+#include "Sys.h"
 #include "Theme.h"
 #include "Ui.h"
 
-#include "../App/Net.h"
-#include "../App/Targets.h"
-#include "../App/Registry.h"
-#include "../App/Forecast.h"
-#include "../App/SensorBindings.h"
-#include "../App/AcClient.h"
-#include "../App/LightControl.h"
+#include "App/Net.h"
+#include "App/Targets.h"
+#include "App/Registry.h"
+#include "App/Forecast.h"
+#include "App/SensorBindings.h"
+#include "App/AcClient.h"
+#include "App/LightControl.h"
+#include "App/PcClient.h"
 
 #include <boardstuff.h>
 #include <NightMare.h>
@@ -16,10 +18,10 @@
 
 // The focus screen: everything this panel exists to control.
 //
-// Two columns, which is what the landscape width is for. The AC owns the left
-// one -- it is the most important control, so it never scrolls out of reach and
-// carries the largest type on the page. The light, the RGB light and the weather
-// share the right column, which scrolls.
+// One column, top to bottom, and the whole page scrolls. The AC comes first --
+// it is the most important control, so it is what the page opens on and it
+// carries the largest type. The weather and the light fit under it without
+// scrolling; the PC and the RGB light are one flick down.
 //
 // The AC and light cards are themselves buttons: tapping the card toggles the
 // thing it represents, and its colour is the state. Anything finer sits on a
@@ -36,8 +38,13 @@
 
 namespace
 {
-    /// Width available inside a column card, after its padding.
-    const lv_coord_t CardInner = UI_COL_W - 22;
+    /// Width available inside a card, after its padding.
+    const lv_coord_t CardInner = UI_CARD_INNER;
+
+    /// The AC card's height. Fixed, because its controls spread themselves over
+    /// whatever height it has, and "whatever its children need" is circular for
+    /// a container whose children are told to fill it.
+    const lv_coord_t AcCardHeight = 228;
 
     lv_obj_t *page = nullptr;
     lv_obj_t *acCard = nullptr;
@@ -207,11 +214,11 @@ namespace
     {
         if (AcClient_targetEnabled())
         {
-            formatTemp(out, size, AcClient_target(), "\xC2\xB0");
+            formatTemp(out, size, AcClient_target(), DEG);
             return "room target";
         }
         const int setpoint = AcClient_unitTemperature();
-        snprintf(out, size, "%d\xC2\xB0", setpoint);
+        snprintf(out, size, "%d" DEG, setpoint);
         // Power and setpoint are separate resources now, so "off" is what the
         // unit says about itself rather than a negative number standing in for it.
         return AcClient_powerOn() ? "unit setpoint" : "unit off";
@@ -306,7 +313,8 @@ namespace
         lv_obj_clear_flag(sleepModal, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(sleepModal, LV_OBJ_FLAG_HIDDEN);
 
-        lv_obj_t *panel = Theme_card(sleepModal, 380, LV_SIZE_CONTENT);
+        const lv_coord_t panelInner = UI_CARD_INNER - 8;
+        lv_obj_t *panel = Theme_card(sleepModal, panelInner + 22, LV_SIZE_CONTENT);
         lv_obj_center(panel);
         lv_obj_set_style_pad_row(panel, 6, LV_PART_MAIN);
         lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -316,16 +324,17 @@ namespace
                                      "The unit switches itself off; the panel need not be awake.",
                                      &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
         lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(note, 350);
+        lv_obj_set_width(note, panelInner);
         lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
         sleepCurrent = Theme_label(panel, "", &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
 
-        // Two rows of choices: five buttons do not fit across 350px.
+        // Two to a row, wrapping: five choices, so the last one sits centred
+        // on a row of its own.
         lv_obj_t *grid = lv_obj_create(panel);
         Theme_plainContainer(grid);
         lv_obj_clear_flag(grid, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_size(grid, 350, LV_SIZE_CONTENT);
+        lv_obj_set_size(grid, panelInner, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
         lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(grid, 6, LV_PART_MAIN);
@@ -333,11 +342,11 @@ namespace
 
         for (int i = 0; i < SleepChoiceCount; ++i)
         {
-            lv_obj_t *button = Theme_button(grid, SleepLabels[i], 110, 38);
+            lv_obj_t *button = Theme_button(grid, SleepLabels[i], (panelInner - 6) / 2, 40);
             lv_obj_add_event_cb(button, onSleepChoice, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         }
 
-        lv_obj_t *cancel = Theme_button(panel, "Cancel", 350, 36);
+        lv_obj_t *cancel = Theme_button(panel, "Cancel", panelInner, 40);
         lv_obj_add_event_cb(cancel, onSleepChoice, LV_EVENT_CLICKED, (void *)(intptr_t)-1);
     }
 
@@ -410,10 +419,14 @@ namespace
     void expandAc()
     {
         const int believed = AcClient_unitTemperature();
-        syncTemp = constrain(believed > 0 ? believed : 24, AC_UNIT_TEMP_MIN, AC_UNIT_TEMP_MAX);
+        syncTemp = clampTo(believed > 0 ? believed : 24, AC_UNIT_TEMP_MIN, AC_UNIT_TEMP_MAX);
         syncOn = AcClient_powerOn();
         syncedAtMs = 0;
 
+        // The panel floats over the page at a fixed position, so the page has
+        // to be at the top for the two to line up -- it may have been scrolled
+        // when Adjust was pressed.
+        lv_obj_scroll_to_y(page, 0, LV_ANIM_OFF);
         lv_obj_add_flag(acCard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(sideColumn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(acPanel, LV_OBJ_FLAG_HIDDEN);
@@ -436,7 +449,7 @@ namespace
     void onSyncTempStep(lv_event_t *event)
     {
         const int direction = (int)(intptr_t)lv_event_get_user_data(event);
-        syncTemp = constrain(syncTemp + direction, AC_UNIT_TEMP_MIN, AC_UNIT_TEMP_MAX);
+        syncTemp = clampTo(syncTemp + direction, AC_UNIT_TEMP_MIN, AC_UNIT_TEMP_MAX);
         syncedAtMs = 0;
         Ui_markDirty();
     }
@@ -459,7 +472,7 @@ namespace
         // (usually with the unit's own IR remote). No confirmation for the same
         // reason -- it corrects a belief, it does not change the room.
         AcClient_manualSync(syncTemp, syncOn);
-        syncedAtMs = millis();
+        syncedAtMs = millisNow();
         Ui_markDirty();
     }
 
@@ -490,36 +503,39 @@ namespace
         Theme_label(header, "Air Conditioning", &lv_font_montserrat_16, UI_COL_TEXT);
         panelChip = Theme_chip(header);
 
-        // An explicit height rather than flex_grow: the cards inside are
-        // LV_PCT(100) tall, and a percentage of a height the layout has not
-        // resolved yet is circular -- LVGL settles that unpredictably.
+        // An explicit height rather than flex_grow, so the scroll area under the
+        // header is a known size. The two cards stacked come out a little
+        // taller than it, so the body scrolls: the setpoint, which is what
+        // this panel is opened for, is all on screen, and Sync is a short
+        // flick below.
         const lv_coord_t headerHeight = 32;
-        const lv_coord_t bodyHeight = UI_CONTENT_H - (2 * UI_GUTTER) - headerHeight - UI_GUTTER;
-        lv_obj_t *body = Theme_row(acPanel, LV_PCT(100), bodyHeight);
-        lv_obj_set_flex_align(body, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        const lv_coord_t bodyHeight = UI_PAGE_H - headerHeight - UI_GUTTER;
+        lv_obj_t *body = lv_obj_create(acPanel);
+        Theme_plainContainer(body);
+        lv_obj_set_size(body, LV_PCT(100), bodyHeight);
+        lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(body, UI_GUTTER, LV_PART_MAIN);
+        Theme_scrollVertical(body, false);
 
-        // Left: the setpoint, adjusted.
-        lv_obj_t *left = Theme_card(body, UI_COL_W, LV_PCT(100));
-        lv_obj_set_style_pad_row(left, 5, LV_PART_MAIN);
+        // First: the setpoint, adjusted.
+        lv_obj_t *left = Theme_card(body, UI_CARD_W, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_row(left, 8, LV_PART_MAIN);
         lv_obj_set_flex_align(left, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
         panelMode = Theme_label(left, "", &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
         panelBig = Theme_label(left, "--", &lv_font_montserrat_48, UI_COL_TEXT);
 
         lv_obj_t *steps = Theme_row(left, CardInner, LV_SIZE_CONTENT);
-        stepButton(steps, LV_SYMBOL_MINUS, (CardInner - 8) / 2, 46, onAcStep, -1);
-        stepButton(steps, LV_SYMBOL_PLUS, (CardInner - 8) / 2, 46, onAcStep, 1);
+        stepButton(steps, LV_SYMBOL_MINUS, (CardInner - 8) / 2, 52, onAcStep, -1);
+        stepButton(steps, LV_SYMBOL_PLUS, (CardInner - 8) / 2, 52, onAcStep, 1);
 
         panelRoom = Theme_label(left, "", &lv_font_montserrat_16, UI_COL_TEXT_DIM);
 
-        // Right: tell the controller what the unit is really doing. Scrollable
-        // because the explanation wraps to two lines on a narrow column.
-        lv_obj_t *right = Theme_card(body, UI_COL_W, LV_PCT(100));
-        lv_obj_set_style_pad_row(right, 5, LV_PART_MAIN);
+        // Second: tell the controller what the unit is really doing.
+        lv_obj_t *right = Theme_card(body, UI_CARD_W, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_row(right, 6, LV_PART_MAIN);
         lv_obj_set_flex_align(right, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_add_flag(right, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_scroll_dir(right, LV_DIR_VER);
-        lv_obj_set_scrollbar_mode(right, LV_SCROLLBAR_MODE_AUTO);
 
         Theme_label(right, "Sync with unit", &lv_font_montserrat_16, UI_COL_TEXT);
         lv_obj_t *hint = Theme_label(right, "Set what the unit's display shows, then Sync.",
@@ -529,9 +545,9 @@ namespace
         lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
         lv_obj_t *tempRow = Theme_row(right, CardInner, LV_SIZE_CONTENT);
-        stepButton(tempRow, LV_SYMBOL_MINUS, 52, 40, onSyncTempStep, -1);
+        stepButton(tempRow, LV_SYMBOL_MINUS, 84, 40, onSyncTempStep, -1);
         syncTempLabel = Theme_label(tempRow, "--", &lv_font_montserrat_28, UI_COL_TEXT);
-        stepButton(tempRow, LV_SYMBOL_PLUS, 52, 40, onSyncTempStep, 1);
+        stepButton(tempRow, LV_SYMBOL_PLUS, 84, 40, onSyncTempStep, 1);
 
         lv_obj_t *powerRow = Theme_row(right, CardInner, LV_SIZE_CONTENT);
         syncOnButton = Theme_button(powerRow, "On", (CardInner - 8) / 2, 34);
@@ -558,7 +574,7 @@ namespace
         if (AcClient_roomTemperature(roomTemperature))
         {
             char room[24];
-            formatTemp(room, sizeof(room), roomTemperature, "\xC2\xB0");
+            formatTemp(room, sizeof(room), roomTemperature, DEG);
             snprintf(buffer, sizeof(buffer), "Room %s", room);
             Theme_setText(panelRoom, buffer);
         }
@@ -567,12 +583,12 @@ namespace
             Theme_setText(panelRoom, "Room --");
         }
 
-        snprintf(buffer, sizeof(buffer), "%d\xC2\xB0", syncTemp);
+        snprintf(buffer, sizeof(buffer), "%d" DEG, syncTemp);
         Theme_setText(syncTempLabel, buffer);
         setToggleLit(syncOnButton, syncOn, UI_COL_COOL);
         setToggleLit(syncOffButton, !syncOn, UI_COL_TEXT);
 
-        const bool showSynced = syncedAtMs && (millis() - syncedAtMs) < SyncedFeedbackMs;
+        const bool showSynced = syncedAtMs && (millisNow() - syncedAtMs) < SyncedFeedbackMs;
         setButtonText(syncButton, showSynced ? LV_SYMBOL_OK "  Synced" : LV_SYMBOL_REFRESH "  Sync");
         lv_obj_set_style_text_color(syncButton, showSynced ? UI_COL_OK : UI_COL_TEXT, LV_PART_MAIN);
     }
@@ -593,12 +609,12 @@ namespace
     void buildAcCard(lv_obj_t *parent)
     {
         // The card is the power switch.
-        acCard = makeCardButton(parent, UI_COL_W, LV_PCT(100));
+        acCard = makeCardButton(parent, UI_CARD_W, AcCardHeight);
         lv_obj_set_style_pad_row(acCard, 5, LV_PART_MAIN);
         lv_obj_add_event_cb(acCard, onAcCard, LV_EVENT_CLICKED, nullptr);
 
         // Title and state on separate rows: side by side, "Air Conditioning" and
-        // a pill like "auto - cooling" do not fit across a 228px column.
+        // a pill like "paused - door" are a tight fit even across 282px.
         lv_obj_t *title = Theme_label(acCard, "Air Conditioning", &lv_font_montserrat_16, UI_COL_TEXT);
         lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
         lv_obj_set_width(title, CardInner);
@@ -618,13 +634,13 @@ namespace
         lv_obj_t *buttons = Theme_row(acControls, CardInner, LV_SIZE_CONTENT);
         const lv_coord_t buttonWidth = (CardInner - 12) / 3;
 
-        acAutoButton = Theme_button(buttons, "Auto", buttonWidth, 38);
+        acAutoButton = Theme_button(buttons, "Auto", buttonWidth, 42);
         lv_obj_add_event_cb(acAutoButton, onAcAuto, LV_EVENT_CLICKED, nullptr);
 
-        acSleepButton = Theme_button(buttons, LV_SYMBOL_BELL, buttonWidth, 38);
+        acSleepButton = Theme_button(buttons, LV_SYMBOL_BELL, buttonWidth, 42);
         lv_obj_add_event_cb(acSleepButton, onSleepOpen, LV_EVENT_CLICKED, nullptr);
 
-        acAdjustButton = Theme_button(buttons, LV_SYMBOL_SETTINGS, buttonWidth, 38);
+        acAdjustButton = Theme_button(buttons, LV_SYMBOL_SETTINGS, buttonWidth, 42);
         lv_obj_add_event_cb(acAdjustButton, onExpand, LV_EVENT_CLICKED, nullptr);
     }
 
@@ -666,7 +682,7 @@ namespace
             if (AcClient_roomTemperature(roomTemperature))
             {
                 char room[24];
-                formatTemp(room, sizeof(room), roomTemperature, "\xC2\xB0");
+                formatTemp(room, sizeof(room), roomTemperature, DEG);
                 used += snprintf(line + used, sizeof(line) - used, " - room %s", room);
             }
         }
@@ -720,9 +736,9 @@ namespace
         switch (livenessOf(TARGET_SLOT_LIGHT))
         {
         case CARD_UNBOUND:
-            // Nothing to toggle; the Resources screen is where a light gets
-            // picked out of what the network actually publishes.
-            Ui_show(UI_PAGE_SENSORS);
+            // Nothing to toggle; a light is picked from a device's resources,
+            // so start from the device list.
+            Ui_show(UI_PAGE_DEVICES);
             return;
         case CARD_OFFLINE:
             return;
@@ -737,7 +753,7 @@ namespace
 
     void buildLightCard(lv_obj_t *parent)
     {
-        lightCard = makeCardButton(parent, UI_COL_W, LV_SIZE_CONTENT);
+        lightCard = makeCardButton(parent, UI_CARD_W, LV_SIZE_CONTENT);
         lv_obj_add_event_cb(lightCard, onLightCard, LV_EVENT_CLICKED, nullptr);
 
         lv_obj_t *header = Theme_row(lightCard, CardInner, LV_SIZE_CONTENT);
@@ -809,6 +825,172 @@ namespace
 
 #pragma endregion
 
+#pragma region "PC"
+
+    // The PC is not on this panel's network at all: these two buttons invoke
+    // actions on the panel that is linked to it (App/PcClient.h).
+
+    lv_obj_t *pcCard = nullptr;
+    lv_obj_t *pcStateLabel = nullptr;
+    lv_obj_t *pcDetail = nullptr;
+    lv_obj_t *pcMonitorsButton = nullptr;
+    lv_obj_t *pcSleepButton = nullptr;
+
+    // Sleep takes two taps, like rebooting the panel does: it is the one thing
+    // on this page that cannot be undone from here -- a sleeping PC has to be
+    // woken at the PC. Monitors off is undone by moving the mouse, so it does not.
+    bool pcSleepArmed = false;
+    uint32_t pcSleepArmedAtMs = 0;
+    const uint32_t PcSleepArmWindowMs = 4000;
+
+    // An invoke has no reply to show, so the button that sent one says so for a
+    // moment. Which button, and when.
+    lv_obj_t *pcSentButton = nullptr;
+    uint32_t pcSentAtMs = 0;
+    const uint32_t PcSentFeedbackMs = 2000;
+
+    /// Whether a request would reach a PC: the role is bound, the linking panel
+    /// is answering, and it says it has a PC connected.
+    bool pcReady()
+    {
+        return livenessOf(TARGET_SLOT_PC) == CARD_LIVE && PcClient_link() == PC_LINK_UP;
+    }
+
+    void onPcCard(lv_event_t *event)
+    {
+        // The card does nothing itself; unbound, it is the way to where a
+        // device is given the role.
+        if (livenessOf(TARGET_SLOT_PC) == CARD_UNBOUND)
+        {
+            Ui_show(UI_PAGE_DEVICES);
+        }
+    }
+
+    void onPcMonitors(lv_event_t *event)
+    {
+        if (!pcReady())
+        {
+            return;
+        }
+        pcSleepArmed = false;
+        if (PcClient_monitorsOff())
+        {
+            pcSentButton = pcMonitorsButton;
+            pcSentAtMs = millisNow();
+        }
+        Ui_markDirty();
+    }
+
+    void onPcSleep(lv_event_t *event)
+    {
+        if (!pcReady())
+        {
+            return;
+        }
+        if (!pcSleepArmed)
+        {
+            pcSleepArmed = true;
+            pcSleepArmedAtMs = millisNow();
+            Ui_markDirty();
+            return;
+        }
+        pcSleepArmed = false;
+        if (PcClient_sleep())
+        {
+            pcSentButton = pcSleepButton;
+            pcSentAtMs = millisNow();
+        }
+        Ui_markDirty();
+    }
+
+    void buildPcCard(lv_obj_t *parent)
+    {
+        pcCard = makeCardButton(parent, UI_CARD_W, LV_SIZE_CONTENT);
+        lv_obj_add_event_cb(pcCard, onPcCard, LV_EVENT_CLICKED, nullptr);
+
+        lv_obj_t *header = Theme_row(pcCard, CardInner, LV_SIZE_CONTENT);
+        Theme_label(header, LV_SYMBOL_KEYBOARD "  PC", &lv_font_montserrat_16, UI_COL_TEXT);
+        pcStateLabel = Theme_label(header, "", &lv_font_montserrat_16, UI_COL_TEXT_DIM);
+
+        pcDetail = Theme_label(pcCard, "", &lv_font_montserrat_14, UI_COL_TEXT_FAINT);
+        lv_label_set_long_mode(pcDetail, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(pcDetail, CardInner);
+
+        lv_obj_t *buttons = Theme_row(pcCard, CardInner, LV_SIZE_CONTENT);
+        const lv_coord_t half = (CardInner - 8) / 2;
+        pcMonitorsButton = Theme_button(buttons, "Monitors off", half, 42);
+        lv_obj_add_event_cb(pcMonitorsButton, onPcMonitors, LV_EVENT_CLICKED, nullptr);
+        pcSleepButton = Theme_button(buttons, "Sleep", half, 42);
+        lv_obj_add_event_cb(pcSleepButton, onPcSleep, LV_EVENT_CLICKED, nullptr);
+    }
+
+    void refreshPcCard()
+    {
+        const Liveness live = livenessOf(TARGET_SLOT_PC);
+        const PcLink link = PcClient_link();
+        const bool ready = live == CARD_LIVE && link == PC_LINK_UP;
+
+        if (pcSleepArmed && (!ready || (millisNow() - pcSleepArmedAtMs) >= PcSleepArmWindowMs))
+        {
+            pcSleepArmed = false;
+        }
+        if (pcSentButton && (millisNow() - pcSentAtMs) >= PcSentFeedbackMs)
+        {
+            pcSentButton = nullptr;
+        }
+
+        applyButton(pcMonitorsButton, ready, pcSentButton == pcMonitorsButton, UI_COL_OK);
+        applyButton(pcSleepButton, ready, pcSleepArmed || pcSentButton == pcSleepButton,
+                    pcSleepArmed ? UI_COL_WARN : UI_COL_OK);
+        setButtonText(pcMonitorsButton, pcSentButton == pcMonitorsButton ? LV_SYMBOL_OK "  Sent"
+                                                                         : "Monitors off");
+        setButtonText(pcSleepButton, pcSleepArmed ? "Tap to confirm"
+                                                  : (pcSentButton == pcSleepButton ? LV_SYMBOL_OK "  Sent"
+                                                                                   : "Sleep"));
+
+        lv_obj_set_style_text_color(pcStateLabel, ready ? UI_COL_OK : UI_COL_TEXT_FAINT, LV_PART_MAIN);
+        lv_obj_set_style_text_color(pcDetail, live == CARD_OFFLINE ? UI_COL_DANGER : UI_COL_TEXT_FAINT,
+                                    LV_PART_MAIN);
+
+        char detail[96];
+        if (live == CARD_UNBOUND)
+        {
+            Theme_setText(pcStateLabel, "--");
+            Theme_setText(pcDetail, "nothing bound - tap to pick the linked panel");
+        }
+        else if (live == CARD_OFFLINE)
+        {
+            snprintf(detail, sizeof(detail), "%s is not answering",
+                     Targets_device(TARGET_SLOT_PC).c_str());
+            Theme_setText(pcStateLabel, "--");
+            Theme_setText(pcDetail, detail);
+        }
+        else if (link == PC_LINK_UP)
+        {
+            snprintf(detail, sizeof(detail), "through %s", Targets_device(TARGET_SLOT_PC).c_str());
+            Theme_setText(pcStateLabel, "Linked");
+            Theme_setText(pcDetail, detail);
+        }
+        else if (link == PC_LINK_DOWN)
+        {
+            // Off, asleep, or just not running its end of the link: the
+            // linking panel cannot tell these apart, so neither can this one.
+            snprintf(detail, sizeof(detail), "%s has no PC connected",
+                     Targets_device(TARGET_SLOT_PC).c_str());
+            Theme_setText(pcStateLabel, "No PC");
+            Theme_setText(pcDetail, detail);
+        }
+        else
+        {
+            snprintf(detail, sizeof(detail), "waiting for \"pc_linked\" from %s",
+                     Targets_device(TARGET_SLOT_PC).c_str());
+            Theme_setText(pcStateLabel, "?");
+            Theme_setText(pcDetail, detail);
+        }
+    }
+
+#pragma endregion
+
 #pragma region "RGB"
 
     lv_obj_t *rgbSwitch = nullptr;
@@ -855,21 +1037,21 @@ namespace
         lv_obj_clear_flag(colorModal, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(colorModal, LV_OBJ_FLAG_HIDDEN);
 
-        // Wheel on the left, controls on the right, so the wheel can stay large
-        // on a screen only 320px tall.
+        // Title, wheel, button, stacked: the wheel takes the full width of the
+        // screen and there is height to spare above and below it.
         lv_obj_t *panel = Theme_card(colorModal, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_center(panel);
-        lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(panel, 16, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(panel, 14, LV_PART_MAIN);
+        lv_obj_set_style_pad_row(panel, 14, LV_PART_MAIN);
+
+        Theme_label(panel, "Pick a colour", &lv_font_montserrat_16, UI_COL_TEXT);
 
         colorWheel = lv_colorwheel_create(panel, true);
         lv_obj_set_size(colorWheel, 250, 250);
         lv_obj_add_event_cb(colorWheel, onColorModalEvent, LV_EVENT_VALUE_CHANGED, nullptr);
 
-        lv_obj_t *side = Theme_column(panel, 150, LV_SIZE_CONTENT);
-        Theme_label(side, "Pick a colour", &lv_font_montserrat_16, UI_COL_TEXT);
-        lv_obj_t *close = Theme_button(side, "Done", 140, 44);
+        lv_obj_t *close = Theme_button(panel, "Done", 250, 44);
         lv_obj_add_event_cb(close, onColorModalEvent, LV_EVENT_CLICKED, nullptr);
     }
 
@@ -915,7 +1097,7 @@ namespace
 
     void buildRgbCard(lv_obj_t *parent)
     {
-        lv_obj_t *card = Theme_card(parent, UI_COL_W, LV_SIZE_CONTENT);
+        lv_obj_t *card = Theme_card(parent, UI_CARD_W, LV_SIZE_CONTENT);
         lv_obj_t *header = Theme_cardHeader(card, "RGB Light");
 
         rgbSwitch = lv_switch_create(header);
@@ -1035,7 +1217,7 @@ namespace
 
     void buildWeatherCard(lv_obj_t *parent)
     {
-        lv_obj_t *card = Theme_card(parent, UI_COL_W, LV_SIZE_CONTENT);
+        lv_obj_t *card = Theme_card(parent, UI_CARD_W, LV_SIZE_CONTENT);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
@@ -1052,7 +1234,7 @@ namespace
         lv_obj_set_style_pad_row(column, 0, LV_PART_MAIN);
         lv_obj_set_style_pad_left(column, 8, LV_PART_MAIN);
 
-        weatherTemp = Theme_label(column, "--\xC2\xB0", &lv_font_montserrat_28, UI_COL_TEXT);
+        weatherTemp = Theme_label(column, "--" DEG, &lv_font_montserrat_28, UI_COL_TEXT);
         weatherCondition = Theme_label(column, "waiting", &lv_font_montserrat_14, UI_COL_TEXT_DIM);
         lv_label_set_long_mode(weatherCondition, LV_LABEL_LONG_DOT);
         lv_obj_set_width(weatherCondition, CardInner - 62);
@@ -1077,12 +1259,12 @@ namespace
         char buffer[64];
         if (data.hasTemp)
         {
-            formatTemp(buffer, sizeof(buffer), data.temp, "\xC2\xB0");
+            formatTemp(buffer, sizeof(buffer), data.temp, DEG);
             Theme_setText(weatherTemp, buffer);
         }
         else
         {
-            Theme_setText(weatherTemp, "--\xC2\xB0");
+            Theme_setText(weatherTemp, "--" DEG);
         }
 
         if (data.condition.length())
@@ -1097,8 +1279,8 @@ namespace
         if (data.hasRange)
         {
             char lo[16], hi[16];
-            formatTemp(lo, sizeof(lo), data.minTemp, "\xC2\xB0");
-            formatTemp(hi, sizeof(hi), data.maxTemp, "\xC2\xB0");
+            formatTemp(lo, sizeof(lo), data.minTemp, DEG);
+            formatTemp(hi, sizeof(hi), data.maxTemp, DEG);
             if (data.hasRain)
             {
                 snprintf(buffer, sizeof(buffer), "%s/%s  " LV_SYMBOL_TINT "%d%%", lo, hi, data.rainProb);
@@ -1123,28 +1305,32 @@ lv_obj_t *ScreenFocus_create(lv_obj_t *parent)
     page = lv_obj_create(parent);
     Theme_plainContainer(page);
     lv_obj_set_size(page, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(page, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_all(page, UI_GUTTER, LV_PART_MAIN);
-    lv_obj_set_style_pad_column(page, UI_GUTTER, LV_PART_MAIN);
+    lv_obj_set_style_pad_row(page, UI_GUTTER, LV_PART_MAIN);
+    // The page is what scrolls, as one piece: a card scrolling inside a page
+    // that also scrolls leaves a thumb guessing which of the two it has hold of.
+    Theme_scrollVertical(page, false);
 
     buildAcCard(page);
 
+    // Everything under the AC, grouped so opening the AC panel can hide it in
+    // one go. It is as tall as its cards and does not scroll itself.
     sideColumn = lv_obj_create(page);
     Theme_plainContainer(sideColumn);
-    lv_obj_set_size(sideColumn, UI_COL_W, LV_PCT(100));
-    lv_obj_add_flag(sideColumn, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(sideColumn, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(sideColumn, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(sideColumn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(sideColumn, UI_CARD_W, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(sideColumn, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(sideColumn, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(sideColumn, UI_GUTTER, LV_PART_MAIN);
 
     buildWeatherCard(sideColumn);
     buildLightCard(sideColumn);
+    buildPcCard(sideColumn);
     buildRgbCard(sideColumn);
 
-    // Built last so it stacks above both columns when shown.
+    // Built last so it stacks above the cards when shown.
     buildAcPanel(page);
 
     // Dialogs at boot rather than on first tap, so opening one never has to find
@@ -1186,5 +1372,6 @@ void ScreenFocus_refresh()
     refreshAcCard();
     refreshWeatherCard();
     refreshLightCard();
+    refreshPcCard();
     refreshRgbCard();
 }

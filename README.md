@@ -1,60 +1,186 @@
 # NightMare Dashboard
 
-A wall panel for the NightMare network. It owns no hardware of its own: it joins
-the network as an ordinary NightMare device and drives an air conditioner, a
-light and an RGB light that live on *other* devices, over the NightMare resource
-protocol.
+A handheld panel for the NightMare network, in an enclosure with a battery. It
+owns no hardware of its own beyond that battery: it joins the network as an
+ordinary NightMare device and drives an air conditioner, a light and an RGB
+light that live on *other* devices, over the NightMare resource protocol.
 
 Current transport: **ESP-NOW through the NightMare gateway**. The Wi-Fi IP
 station remains enabled for SNTP and other direct IP services; MQTT is compiled
 out (`NM_ENABLE_MQTT=0`). The gateway must share the station's Wi-Fi channel.
 
 Hardware: **Sunton ESP32-3248S035C** — ESP32-WROOM-32, 4MB flash, no PSRAM,
-ST7796 320×480 SPI panel, GT911 capacitive touch, RGB status LED, PWM backlight.
-Mounted **landscape**: the UI is 480×320.
+ST7796 320×480 SPI panel, GT911 capacitive touch, PWM backlight. The board's RGB LED is held off and the
+firmware has no way to turn it on, to spare the battery.
+Held **portrait**: the UI is 320×480. Added with the enclosure: a single
+lithium cell, read through a 1M / 1M divider on GPIO 35.
+
+## Power
+
+A panel on a battery spends most of its life not being looked at, so it steps
+down through three stages as it is left alone, and one touch undoes all of it.
+
+| Stage       | Entered                                   | What is on                                                    | A touch |
+| ----------- | ----------------------------------------- | ------------------------------------------------------------- | ------- |
+| **Active**  | any touch                                 | Everything. Backlight at `bl_active`.                          | is a touch |
+| **Resting** | `rest_after` seconds without a touch       | The resting clock at `bl_rest`. Network still up, so the clock's corners stay live. | wakes instantly, and is spent on waking |
+| **Asleep**  | `sleep_after` seconds on the resting clock | Nothing but the touch controller. Backlight off, radio stopped and deinitialised, display controller in sleep-in, processor in light sleep. | wakes in under a second; the network rejoins over the next few |
+
+The two timeouts add: with the defaults the panel rests after one minute and
+sleeps five minutes after that. Either can be `0` for never — but sleep is only
+reached through rest, so with `rest_after` at 0 the panel never sleeps on its
+own either. **Setup** has both sliders and a button for each stage; `SLEEP` on
+the console does the same.
+
+**Why light sleep, when the stage is the deepest one.** A true ESP32 deep sleep
+can only be woken by a pin in the RTC domain, and this firmware drives no line
+from the GT911's interrupt output to one. So the sleep stage keeps the processor
+in *light* sleep and wakes it on a timer four times a second to ask the touch
+controller, over I2C, whether anything happened — a millisecond of work per
+look. The GT911's status register latches a report until the host clears it,
+which is why a tap much shorter than the interval between looks is still caught.
+
+It should cost less than it sounds, and it buys something. On this board the
+floor is expected to be set by what cannot be switched off — the regulator, the
+USB bridge, the touch controller itself — rather than by the difference between
+the two sleep modes; that is reasoning from the parts, not a measurement, and a
+meter on the battery lead is what settles it. And light sleep keeps RAM: waking is a continuation, not a boot, so the page is back
+on screen before the radio has finished starting. If the GT911's INT line is
+ever wired to an RTC-capable GPIO, `board_sleep_until_touch()` in
+[lib/boardstuff/boardstuff.cpp](lib/boardstuff/boardstuff.cpp) is the one
+function to change.
+
+Going to sleep publishes the panel's retained `status` with `online: false`
+before the radio stops, so the rest of the network sees it leave rather than
+time out. Waking restarts the radio, the Wi-Fi station and ESP-NOW through the
+library's own start path, and gateway discovery and the retained replay follow
+exactly as after a boot.
+
+**None of the sleep stage has run on the hardware yet.** It compiles; whether
+the radio comes back cleanly on this board's heap, and whether this GT911's
+firmware latches its status the way the datasheet says, are the two things to
+watch on the first try. `[power]` lines on the serial console bracket every
+sleep, with a heap sample on waking.
+
+### Battery
+
+[src/App/Battery.cpp](src/App/Battery.cpp) samples the divider every ten
+seconds, smooths it, and turns the voltage into a percentage with a lookup on a
+lithium cell's resting curve. It shows in the status bar, on the resting clock
+and on Setup (with the voltage), turns red at 15%, and is published as two
+resources of the panel's own, `battery` (percent) and `battery_voltage`, so
+anything on the network can watch a panel running down. With no cell fitted the
+reading is near zero, the indicator disappears and both resources go
+unavailable.
+
+Things worth knowing before trusting the number:
+
+- **Fit a capacitor.** Two megohms is the right choice for a divider that is
+  never switched off — it draws 2µA — but 500k of source impedance cannot charge
+  the ADC's sampling capacitor in time, and the pin reads low and jittery on its
+  own. 100nF from GPIO 35 to ground fixes it.
+- **Trim it once.** `BAT_DIVIDER_MILLI` in
+  [lib/boardstuff/boardstuff.h](lib/boardstuff/boardstuff.h) is the divider
+  ratio in thousandths, 2000 for equal resistors. Resistor tolerance and the
+  ADC's own error are both a few percent; compare `BATTERY` on the console with
+  a multimeter on the cell and scale the number to match.
+- **The percentage is an estimate from voltage alone.** It sags while the
+  backlight is at full and recovers at rest, and it cannot tell a cell on charge
+  from a full one — nothing on the board reports that a charger is attached.
 
 ## Screens
 
-Status bar across the top, nav bar across the bottom, pages in between — 464×246
-of content. That makes height the scarce dimension and width the plentiful one,
-so most pages are two columns.
+A top bar on every screen: a back arrow (not on the menu), the page's title, then
+clock, battery, Wi-Fi and link state. There is no bottom bar; 320x452 is left for
+the page.
 
-**The AC and light cards are switches.** Tapping the card toggles the thing it
-represents and its colour is the state; anything finer sits on a nested button,
-which LVGL does not bubble, so pressing one does not also toggle the card.
+**Nothing scrolls if it can help it.** A scroll redraws the whole 320x480 screen
+every frame, and sending that over SPI takes about 60 ms at 40 MHz, so scrolling
+can never be smooth on this panel. The menu and settings are *pages*: swipe
+left or right, with dots at the bottom showing where you are. A page flip draws
+once. (LVGL's render buffer is also double, so drawing overlaps the transfer.)
+Devices and a device's resources are paged lists (Prev/Next or swipe).
 
-**Unbound or offline controls stay on screen, greyed and inert**, rather than
-being replaced by a notice — the page keeps its shape, and what the panel would
-let you do stays visible. A line on the card says which it is ("nothing bound"
-or "<device> is not answering"). Offline means the panel has heard no retained
-`online` status from that device. Tapping an unbound AC card jumps to Devices;
-tapping an unbound light card jumps to Resources, which is where a light is
-chosen.
+**Menu** (home, and where waking from rest lands). Big tiles, six to a page. A
+tile is a control that shows its own state, or a door to another page.
 
-Two implementation notes for anyone extending this. The greying is done with
+| Tile | Tap | Hold |
+| ---- | --- | ---- |
+| Light, AC, Bed | toggle on/off; lit when on, with state and temperature (Bed is the RGB light, Sherlock, and shows its temperature top-right) | the full controls |
+| PC | monitors off | sleep the PC |
+| Rest / Sleep (page 2) | go to that power stage | |
+| Controls | the full controls: AC setpoint and sync, weather, light, PC, RGB colour | |
+| Devices | the device list | |
+| Battery, Settings (page 1), Update (page 2) | the matching settings page | |
+
+An unbound or silent tile is dimmed and says so; tapping an unbound one opens
+Devices, where it is bound.
+
+**Settings** pages, each one subject: Display (brightness, the two timeouts, Rest
+now / Sleep now), Power (battery and the three stages), Network, Update (firmware
+from the PC) and System (uptime, memory, reboot).
+
+Two implementation notes for anyone extending this. Greying is done with
 explicit colours, not `LV_STYLE_OPA`: any opacity below 255 makes LVGL render
-that card into an intermediate layer, asking for up to `LV_LAYER_SIMPLE_BUF_SIZE`
+that object into an intermediate layer, asking for up to `LV_LAYER_SIMPLE_BUF_SIZE`
 (24KB) on *every redraw*, which this board cannot spare. And LVGL still delivers
-clicks to a button in `LV_STATE_DISABLED`, so every handler re-checks liveness
-itself rather than trusting the greyed-out look.
+clicks to a button in `LV_STATE_DISABLED`, so handlers re-check liveness
+themselves. A widget that is dragged sideways (a slider) must call
+`Pager_noSwipe`, or the swipe at the end of the drag also turns the page.
 
 | Screen       | What it does                                                                 |
 | ------------ | ---------------------------------------------------------------------------- |
-| **Home**     | Left column, the AC: tap to toggle power, with state, setpoint, door, and buttons for Auto, sleep (`🔔`) and adjust (`⚙`). Adjust expands over the page for setpoint −/+ and **Sync with unit**. Right column (scrolls): weather (tap to refresh), the light (tap to toggle) and the RGB light. |
-| **Devices**  | Everything heard announcing itself through the gateway, with online state and age. Tap a row for that device's detail page. |
-| **Device**   | Header spans the page; below it, left: bind as the air conditioner, reboot or delete. Right: Boot / Hardware / System across the top, with the device's answer under them. |
-| **Resources**| Every resource value seen on the network, newest per address, with a badge on anything already in use. Tap a row for that resource's page. |
-| **Resource** | One resource: how long ago it arrived, its device, its full topic and its value — and the buttons that give it a job. Light, RGB colour, door sensor (1 = open / 1 = closed), resting screen, or the whole device as the air conditioner. The button for whatever it already does is lit. |
-| **Setup**    | Left: brightness, resting brightness, idle timeout — applied and saved as they move — and **Rest now**. Right: name, firmware, IP, WiFi, ESP-NOW state, uptime, heap; request MessagePack manifests or reboot the panel. |
-| **Resting**  | After the idle timeout or Rest now: a dimmed logo and a 120px clock with a blinking colon, with the corners carrying what matters — top-left anything wrong (door open, no WiFi, no gateway), top-right temperatures, bottom-left your chosen resource, bottom-right what is switched on. Any touch wakes it. |
+| **Menu**     | Tiles, above. |
+| **Controls** | The old home page, reached by holding a light, AC or RGB tile or the Controls tile: the AC with Auto, sleep and adjust (setpoint, **Sync with unit**), weather, light, PC and RGB colour. It still scrolls. |
+| **Devices**  | Everything heard announcing itself on `<device>/status`, seven to a page, with online state and age. Tap a row to open the device. |
+| **Device**   | Header, then: bind the device as the **AC**, the **PC** link or the **Bed** light (the RGB role) (each a lit toggle; a device role is the contract's own resource names, so the RGB one uses `rgb`); **Resources**; reboot or delete. Under that, Boot / Hardware / System, with the device's answer filling the rest of the page. Opening a device starts receiving its resources. |
+| **Resources**| One device's resources, six to a page, with a badge on anything already in use. Tap a row for that resource's page. |
+| **Resource** | Two swipeable pages. **Value**: the reading, large, with its device, topic and age (a document's fields listed below). **Use this as**: big buttons for the light switch, the resting screen's resource and the door sensor (with which of 1/0 means open), plus Stop using this. The AC, PC link and RGB are device roles, set on the device page. |
+| **Settings** | Pages, above. |
+| **Resting**  | After the idle timeout or Rest now: a dimmed logo and a 120px clock, hours above minutes, with the corners carrying what matters. Any touch wakes it, onto the first menu page. |
+
+### What the panel keeps of the network
+
+Only **devices** are tracked all the time: the panel subscribes to `+/status` and
+nothing else network-wide, so the registry holds up to 32 devices and nothing
+else a device publishes. Everything else is fetched when it is wanted:
+
+- **The open device's resources**: opening a device page subscribes to
+  `<device>/resource/+/state` (the gateway replays the retained values), and
+  leaving it unsubscribes and drops them. One device at a time.
+- **What a role uses**: the AC, light, RGB and PC are subscribed to by their own
+  bindings, and the door and rest sensors by `Net_loop`; those stay.
+
+This replaced a standing `+/resource/+/state` subscription. Receiving every
+resource of every device filled the inbox in a burst, dropped frames without any
+priority (a dropped retained status is a device that never appears), and cost
+radio time on a battery. The inbox is 8KB, down from 12KB.
+
+Still scrolling, and the next candidate for pages: Controls.
 
 ## Build and flash
+
+Native ESP-IDF, built through PlatformIO. There is no Arduino core in this
+firmware.
 
 ```sh
 pio run                 # build
 pio run -t upload       # flash over USB
 pio device monitor      # serial console, 115200
 ```
+
+Kconfig choices are in [sdkconfig.defaults](sdkconfig.defaults), which is
+source and says why each one is there. PlatformIO generates
+`sdkconfig.esp32-3248S035C` from it; that file is not source and is gitignored.
+Delete it if a change to the defaults does not seem to take.
+
+**Coming from the Arduino build.** Flash over USB once; the two are not
+OTA-compatible in any way that has been tried. Expect the stored settings to be
+gone on the first boot: the settings partition is now mounted as SPIFFS, which
+formats a partition it cannot read. That means the device name, the stored
+Wi-Fi profile, every binding and the display settings go back to their
+defaults, and the panel joins with the `creds.h` fallback profile. The Arduino
+tree as it last built is kept at the git ref `refs/snapshots/pre-idf-port`.
 
 First build only:
 
@@ -67,6 +193,37 @@ uses gateway discovery and needs no broker credentials or certificate.
 `include/NightMareConfig.h` selects the library's features and is not secret —
 it is where the timezone, the log level and the threading choices live.
 
+### Updating over Wi-Fi
+
+After one USB flash with this build (rollback needs its bootloader), later
+builds go on from the PC. The PC pushes the image straight to the panel; Dash-P4
+is not involved and nothing is fetched from a web server.
+
+1. Put a long random `DASHLINK_TOKEN` in `include/creds.h` (see
+   `creds.example.h`) and flash. Without it update mode refuses to open.
+2. On the panel: Settings > Firmware update > Update from PC (or `OTA START` on
+   the console). It shows `ip:7340`. Update mode closes by itself after two
+   minutes without a PC.
+3. On the PC, from `devices/Dash-P4/pc`:
+
+```sh
+set DASHLINK_TOKEN=<the same token>
+python -m dashlink push-fw --target dashboard --host <panel ip>
+```
+
+It sends `.pio/build/esp32-3248S035C/firmware.bin` (or `--file`). The panel
+checks the sha256, the image and the slot, restarts, and the command reads the
+build identity from the new session to say whether it is running or was rolled
+back. The protocol is DashLink's, see `Dash-P4/pc/PROTOCOL.md`.
+
+What it will not do: update below 30% battery (a panel with no cell fitted is
+allowed), rest into sleep while update mode is open, or open without a token.
+A new image boots on probation and is marked good after 20 s of a running main
+loop; one that resets before that is replaced by the previous image by the
+bootloader. The panel also listens for the first minute after such a boot,
+only so the PC can make that check. The link is not encrypted (DashLink v0):
+the token keeps strangers on the LAN out, it does not hide the image.
+
 ## What the panel says about itself
 
 The panel is an ordinary NightMare device, so it publishes the same retained
@@ -77,7 +234,8 @@ over the console and can republish either encoding.
 
 [include/NightMareHardware.h](include/NightMareHardware.h) is what makes
 `hardware.board` read `sunton-esp32-3248s035c:v1` and the topology lists all
-eighteen pins instead of `unspecified` / `none`. Connections reference compact
+nineteen pins — the board's eighteen and the battery divider on GPIO 35 —
+instead of `unspecified` / `none`. Connections reference compact
 device and bus indexes and carry signal type, direction, pull, and active-low
 state. Pin-specific operating details remain in the source comments rather
 than being sent as rendering metadata.
@@ -183,6 +341,21 @@ naming the device names all of them:
 | `ac_manual_sync`    | action        | `{"power":bool,"temperature":int}` |
 | `ac_sleep`          | action        | `{"minutes":int}`, 0 cancels |
 
+**The PC is bound to a device too**, on the same page, and it is not the PC:
+it is the panel that is linked to the PC. This panel has no link of its own.
+Dash-P4 does, and offers it to the network as three resources, which
+[src/App/PcClient.cpp](src/App/PcClient.cpp) is the other end of:
+
+| Resource          | Type        | What the panel does with it |
+| ----------------- | ----------- | --------------------------- |
+| `pc_linked`       | bool sensor | whether the PC card's buttons are live |
+| `pc_monitors_off` | action      | no arguments; **Monitors off** |
+| `pc_sleep`        | action      | no arguments; **Sleep**, after a confirming tap |
+
+An invoke has no reply, so the button shows "Sent" for a moment and nothing
+more. After a sleep, `pc_linked` going false a few seconds later is the
+confirmation. Nothing on either panel can wake the PC again.
+
 **The light and the colour are bound to one resource each**, from a resource's
 own page — **Resources → tap a row**. Nothing in the protocol says a light must
 be called `light`, so rather than assuming, the panel shows what is actually
@@ -206,8 +379,8 @@ own the bound colour as well — that is a real device, not a mistake. The only
 thing that cannot be shared is a single `(device, resource)` address, which the
 resource manager refuses on its own.
 
-Bindings persist in the NightMare settings store (`ac_host`, `light_host` /
-`light_res`, `rgb_host` / `rgb_res`), so they survive a reboot but not a
+Bindings persist in the NightMare settings store (`ac_host`, `pc_host`,
+`light_host` / `light_res`, `rgb_host` / `rgb_res`), so they survive a reboot but not a
 filesystem wipe. They can also be set from the console — over serial, or over
 MQTT on `<panel>/console/in`:
 
@@ -216,9 +389,12 @@ TARGET                          # show current bindings as JSON
 TARGET AC Adler                 # bind the AC role to the device "Adler"
 TARGET LIGHT Mycroft light      # bind the light role to Mycroft's "light"
 TARGET RGB Sherlock             # bind the colour role, default resource name
+TARGET PC Dash-P4               # bind the PC role to the panel linked to the PC
 TARGET LIGHT ""                 # unbind
 FORECAST                        # request a forecast now
 HEAP                            # free / min-ever-free / largest free block
+BATTERY                         # cell present, millivolts, percent
+SLEEP                           # sleep now; a touch wakes it
 ```
 
 Names are **case-sensitive** — `Micro` and `micro` are different devices.
@@ -340,6 +516,7 @@ that was kept and counted down on the panel only.)
 | Key          | Default | Meaning                                  |
 | ------------ | ------- | ---------------------------------------- |
 | `rest_after` | `60`    | Idle seconds before the resting screen. `0` disables it. |
+| `sleep_after`| `300`   | Seconds on the resting screen before the panel sleeps. `0` disables it. |
 | `bl_active`  | `200`   | Backlight level while in use, 8–255.     |
 | `bl_rest`    | `24`    | Backlight level while resting, 0–255.    |
 | `door_device` / `door_key` | — | Device and resource publishing the door state. Set from the Resources page. |
@@ -382,18 +559,21 @@ more or less unchanged.
 
 ```
 src/
-  main.cpp              Startup, the loop, and the TARGET/FORECAST/HEAP commands
+  main.cpp              app_main, startup, the loop, and the TARGET/FORECAST/HEAP/BATTERY/SLEEP commands
+  Sys.h                 The clock, the sleep and the string helpers every file uses
   App/
-    Net.cpp             The wildcard subscriptions, the inbox, message routing
+    Net.cpp             The wildcard subscriptions, the inbox, message routing, radio suspend/resume
+    Battery.cpp         The cell: voltage, percentage, and the two resources that publish them
     AcClient.cpp        The air conditioner's resource contract
     LightControl.cpp    The light and the colour, and the one-number colour model
+    PcClient.cpp        The PC's monitors-off and sleep, through the panel linked to it
     Targets.cpp         Which (device, resource) fills which role, persisted
     Registry.cpp        Bounded snapshot of devices and resource values seen
     Mqttp.cpp           Correlated console request/response, one at a time
     SensorBindings.cpp  The door and resting-screen resources
     Forecast.cpp        Weather model; the only place the icon set is included
   UI/
-    Ui.cpp              Screen manager, nav bar, idle/rest transitions
+    Ui.cpp              Screen manager, nav bar, the active/resting/asleep stages
     Theme.cpp           Colours, shared styles, widget builders
     Screen*.cpp         One file per screen; ScreenResource.cpp is the binder
     Assets/logo_mw.c    Generated by tools/png2lvgl.py
@@ -452,7 +632,7 @@ explicitly marked historical. MQTT/TLS tuning is no longer active.
   half-built handle and the first publish panics the core into a boot loop.
 
   Three things keep that from happening, and all three are load-bearing:
-  device rows are built **lazily**, while Resources uses four reusable rows and
+  device rows are built **lazily**, while Resources uses six reusable rows and
   pages through the registry (neither allocates below the `Ui_canAllocateRow()`
   floor); the LVGL render buffer is small and deliberately **not**
   DMA-capable, since the DMA pool is what the WiFi driver draws from; and
@@ -470,7 +650,7 @@ explicitly marked historical. MQTT/TLS tuning is no longer active.
   memory at whatever moment the tap lands, including mid-TLS-reconnect, and a
   failed allocation inside LVGL 8 crashes instead of failing. List rows are the
   opposite — built on demand and freed when their page is left or the panel
-  rests. The Resources list never holds more than one four-row page, regardless
+  rests. The Resources list never holds more than one six-row page, regardless
   of how many entries the registry contains.
 
   `HEAP` on the console reports free, minimum-ever-free, largest free block and
@@ -490,8 +670,9 @@ explicitly marked historical. MQTT/TLS tuning is no longer active.
   followed by `mqtt_client: Error to resend data` is what running out of room
   there looks like from the outside: lwIP could not get a send buffer.
 
-  **The numbers here are `MALLOC_CAP_8BIT`, not `ESP.getFreeHeap()`** — see
-  [src/App/Heap.h](src/App/Heap.h). The Arduino accessors report
+  **The numbers here are `MALLOC_CAP_8BIT`, not `MALLOC_CAP_INTERNAL`** — see
+  [src/App/Heap.h](src/App/Heap.h). The Arduino accessors (`ESP.getFreeHeap()`)
+  reported
   `MALLOC_CAP_INTERNAL`, which counts IRAM that no byte-buffer `malloc` can
   ever hand out; on this board that reads about 37KB high and its
   largest-free-block never moves off 36852. Every gate that used to read them
@@ -518,28 +699,55 @@ explicitly marked historical. MQTT/TLS tuning is no longer active.
   certificate chain, and a handshake needs roughly 50–60KB. A handshake that
   cannot get it fails with `esp-tls 0x801A` / `tls stack 0x2880`
   (`MBEDTLS_ERR_X509_ALLOC_FAILED`). None of it can be changed from
-  `platformio.ini`. The two real fixes are the planned local broker (plain MQTT,
-  no TLS) or rebuilding the framework libraries with
-  `CONFIG_MBEDTLS_DYNAMIC_BUFFER` via pioarduino's `custom_sdkconfig`.
+  `platformio.ini`. That was the Arduino build, and it is history twice over:
+  MQTT is compiled out, and on native ESP-IDF the mbedTLS settings are ordinary
+  Kconfig options that `sdkconfig.defaults` could set if TLS ever comes back.
 
-- **The platform pin matters.** `platform = espressif32` resolves to the
-  pioarduino fork (55.x, Arduino core 3.x). Core 3.x is *required*:
-  NightMareNetwork's MQTT module uses the nested `esp_mqtt_client_config_t` that
-  only exists from ESP-IDF 5.0. Core 2.x will not compile.
+- **What moved in the ESP-IDF port.** Worth knowing when reading older notes in
+  this file, most of which were written against the Arduino build:
+  - There is no `setup()`/`loop()` pair supplied by a framework. `app_main()`
+    in [src/main.cpp](src/main.cpp) calls the project's own `setup()` once and
+    `loop()` forever, on the main task, pinned to the second core with a 12KB
+    stack. Everything said here about "the `loop()` task" still holds; it is
+    that task.
+  - Strings are `std::string`. The helpers the Arduino `String` had as
+    methods (`trim`, `toLower`, `slice`, `replaceAll`, `toLong` ...) are the
+    library's free functions, reached as `Text::` through
+    [src/Sys.h](src/Sys.h), which also has the millisecond clock and the sleep.
+    One real difference: a `std::string` cannot be built from a null pointer,
+    so a JSON value that might not be a string is checked before it is used.
+  - The display is driven through esp_lcd's SPI panel-IO with DMA, and the
+    transfer is asynchronous: LVGL gets its buffer back from the SPI interrupt.
+    TFT_eSPI is gone. The ST7796 init sequence and rotation table are the ones
+    it used, kept verbatim in
+    [lib/boardstuff/boardstuff.cpp](lib/boardstuff/boardstuff.cpp).
+  - Only the IDF components `src/` depends on are built (`set(COMPONENTS ...)`
+    in [CMakeLists.txt](CMakeLists.txt)). Besides the build time, that is what
+    keeps the linker-script step inside the Windows command-line limit, so a
+    new `REQUIRES` in `src/CMakeLists.txt` is how a component is added.
+  - None of this has run on the board. It compiles and links; the display
+    bring-up, touch, ADC and sleep are all new code against new drivers.
 
 - **If the display or touch is wrong on real hardware**, these are the knobs —
   none of it could be verified without the board in hand:
-  - Colours inverted → add `-D TFT_INVERSION_ON` to `build_flags`.
-  - Red and blue swapped → add `-D TFT_RGB_ORDER=1`.
-  - Image upside down → in `platformio.ini`, swap `-D TFT_ORIENTATION_LANDSCAPE`
-    for `-D TFT_ORIENTATION_LANDSCAPE_INV` (rotation 1 ↔ 3, same axis, 180°
-    apart). Touch is derived from the same rotation, so it follows
+  - Colours inverted → send the inversion-on command (`0x21`) at the end of
+    `displayBegin()` in `lib/boardstuff/boardstuff.cpp`.
+  - Red and blue swapped → drop `MadBgr` from the `MemoryAccess` constants in
+    the same file.
+  - Tearing or garbage at speed → lower `ST7796_SPI_FREQ` in
+    `lib/boardstuff/boardstuff.h` from 40MHz.
+  - Image upside down → in `platformio.ini`, swap `-D TFT_ORIENTATION_PORTRAIT`
+    for `-D TFT_ORIENTATION_PORTRAIT_INV` (rotation 0 ↔ 2, same axis, 180°
+    apart). Which one is right depends only on which way up the enclosure
+    holds the board. Touch is derived from the same rotation, so it follows
     automatically — there is no second place to edit.
   - Image right but touch wrong → the two have genuinely drifted, and the
-    rotation-1/3 branches of `gt911_read_touches()` in
+    rotation-0/2 branches of `gt911_read_touches()` in
     [lib/boardstuff/boardstuff.cpp](lib/boardstuff/boardstuff.cpp) are where to
-    look. Portrait rotation 2 was verified on hardware; the landscape branches
-    follow the same derivation but have not been.
+    look. Portrait rotation 2 was verified on hardware; rotation 0 is the
+    controller's native frame, passed through untouched.
+  - The layout is portrait-only. The landscape macros still rotate the panel
+    and its touch correctly, but the screens are no longer laid out for 480×320.
   - Anything laying out pixels must use `SCREEN_WIDTH`/`SCREEN_HEIGHT`, never
     `TFT_WIDTH`/`TFT_HEIGHT`: those stay the panel's native portrait size and
     are what the touch transform is expressed in.

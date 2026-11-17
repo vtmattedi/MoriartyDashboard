@@ -1,14 +1,17 @@
 #include "Ui.h"
+#include "Sys.h"
 #include "Screens.h"
 #include "Theme.h"
 
-#include "../App/Net.h"
-#include "../App/Registry.h"
-#include "../App/Forecast.h"
-#include "../App/Targets.h"
-#include "../App/Mqttp.h"
-#include "../App/SensorBindings.h"
-#include "../App/Heap.h"
+#include "App/Net.h"
+#include "App/Registry.h"
+#include "App/Forecast.h"
+#include "App/Targets.h"
+#include "App/Mqttp.h"
+#include "App/SensorBindings.h"
+#include "App/Heap.h"
+#include "App/Battery.h"
+#include "App/Ota.h"
 
 #include <boardstuff.h>
 #include <NightMare.h>
@@ -16,8 +19,7 @@
 namespace
 {
     lv_obj_t *pages[UI_PAGE_COUNT] = {nullptr};
-    lv_obj_t *navButtons[UI_PAGE_COUNT] = {nullptr};
-    lv_obj_t *restOverlay = nullptr;
+        lv_obj_t *restOverlay = nullptr;
 
     UiPage currentPage = UI_PAGE_FOCUS;
     bool resting = false;
@@ -36,6 +38,10 @@ namespace
 
     // Read once at startup so a panel can be tuned per room without a reflash.
     uint32_t restAfterMs = 60000;
+    // Counted from the moment the resting screen came up, not from the last
+    // touch, so the two timeouts add rather than race.
+    uint32_t sleepAfterMs = 300000;
+    bool sleepRequested = false;
     uint8_t backlightActive = 200;
     uint8_t backlightRest = 24;
 
@@ -43,59 +49,31 @@ namespace
     // slow enough that redrawing text is not what the CPU spends its day on.
     const uint32_t RefreshIntervalMs = 250;
 
-    void onNavClicked(lv_event_t *event)
+    /// What the top bar says for each page, and where Back goes from it.
+    const char *pageTitle(UiPage page)
     {
-        const UiPage page = (UiPage)(intptr_t)lv_event_get_user_data(event);
-        Ui_show(page);
-    }
-
-    void styleNavButton(lv_obj_t *button, bool selected)
-    {
-        lv_obj_set_style_text_color(button, selected ? UI_COL_ACCENT : UI_COL_TEXT_DIM, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(button, selected ? LV_OPA_10 : LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(button, UI_COL_ACCENT, LV_PART_MAIN);
-    }
-
-    lv_obj_t *buildNavBar(lv_obj_t *parent)
-    {
-        // One line each: the bar is only 46px deep, so icon and text sit side by
-        // side rather than stacked.
-        static const char *labels[UI_NAV_TAB_COUNT] = {
-            LV_SYMBOL_HOME "  Home",
-            LV_SYMBOL_WIFI "  Devices",
-            LV_SYMBOL_LIST "  Resources",
-            LV_SYMBOL_SETTINGS "  Setup",
-        };
-
-        lv_obj_t *bar = lv_obj_create(parent);
-        Theme_plainContainer(bar);
-        lv_obj_set_size(bar, SCREEN_WIDTH, UI_NAVBAR_H);
-        lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-        lv_obj_set_style_bg_color(bar, UI_COL_SURFACE, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_color(bar, UI_COL_BORDER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(bar, 1, LV_PART_MAIN);
-        lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
-        lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-        for (int i = 0; i < UI_NAV_TAB_COUNT; ++i)
+        switch (page)
         {
-            lv_obj_t *button = lv_btn_create(bar);
-            lv_obj_remove_style_all(button);
-            lv_obj_set_size(button, (SCREEN_WIDTH / UI_NAV_TAB_COUNT) - 10, UI_NAVBAR_H - 8);
-            lv_obj_set_style_radius(button, 10, LV_PART_MAIN);
-            lv_obj_add_event_cb(button, onNavClicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-            lv_obj_t *label = lv_label_create(button);
-            lv_label_set_text(label, labels[i]);
-            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-            lv_obj_center(label);
-
-            navButtons[i] = button;
-            styleNavButton(button, i == 0);
+        case UI_PAGE_MENU: return nullptr; // the panel's own name
+        case UI_PAGE_FOCUS: return "Controls";
+        case UI_PAGE_DEVICES: return "Devices";
+        case UI_PAGE_SENSORS: return "Resources";
+        case UI_PAGE_SETTINGS: return "Settings";
+        case UI_PAGE_DEVICE_DETAIL: return "Device";
+        case UI_PAGE_RESOURCE_DETAIL: return "Resource";
+        default: return "";
         }
-        return bar;
+    }
+
+    UiPage parentOf(UiPage page)
+    {
+        switch (page)
+        {
+        case UI_PAGE_DEVICE_DETAIL: return UI_PAGE_DEVICES;
+        case UI_PAGE_SENSORS: return UI_PAGE_DEVICE_DETAIL;
+        case UI_PAGE_RESOURCE_DETAIL: return UI_PAGE_SENSORS;
+        default: return UI_PAGE_MENU;
+        }
     }
 
     /// One number that changes whenever anything a screen renders has changed,
@@ -103,7 +81,8 @@ namespace
     uint32_t dataRevision()
     {
         return Registry_revision() * 31u + Forecast_revision() * 7u + Targets_revision() +
-               Mqttp_revision() * 131u + SensorBindings_revision() * 17u;
+               Mqttp_revision() * 131u + SensorBindings_revision() * 17u +
+               Battery_revision() * 257u;
     }
 
     /// Hand back what a page only needs while it is visible.
@@ -112,8 +91,11 @@ namespace
         switch (page)
         {
         case UI_PAGE_FOCUS:
-            // Home comes back to its overview, not a half-finished adjustment.
+            // Controls come back to their overview, not a half-finished adjustment.
             ScreenFocus_collapse();
+            break;
+        case UI_PAGE_SETTINGS:
+            ScreenSettings_home();
             break;
         case UI_PAGE_DEVICES:
             ScreenDevices_release();
@@ -139,10 +121,12 @@ namespace
             return;
         }
         resting = true;
-        restEnteredMs = millis();
+        restEnteredMs = millisNow();
         // The page stays current under the overlay, but nobody can see it, and
         // the panel may rest for hours. Its rows are rebuilt on wake.
-        releasePage(currentPage);
+        // Whatever page it was on, it wakes on the first page of the menu.
+        Ui_show(UI_PAGE_MENU);
+        ScreenMenu_home();
         ScreenRest_refresh();
         // The colour picker and the bind dialog are built lazily onto the same
         // top layer, so by then they sit above this overlay. Raise it, or a
@@ -169,7 +153,60 @@ namespace
     void onTouchDetected()
     {
         // Called from the LVGL input driver, so it must stay trivial.
-        lastActivityMs = millis();
+        lastActivityMs = millisNow();
+    }
+
+    /// The third stage. Returns when the glass is touched, with the panel
+    /// active again.
+    ///
+    /// Everything that can be switched off is, in order of what it costs: the
+    /// backlight, then the radio, then the display controller, and last the
+    /// processor itself. It is a light sleep rather than a deep one -- see
+    /// board_sleep_until_touch() for why -- which has a consolation worth
+    /// having: RAM survives, so every widget, binding and registry entry is
+    /// still there on the other side and the page is back before the network is.
+    void sleepUntilTouch()
+    {
+        sleepRequested = false;
+
+        // Through rest first, whichever way this was reached: it frees the
+        // list rows, and that heap is what the Wi-Fi driver is rebuilt from on
+        // the way back.
+        enterRest();
+        set_backlight(0);
+
+        puts("[power] sleeping until touched");
+        Net_suspend();
+        display_sleep(true);
+
+        const uint32_t sleptAtMs = millisNow();
+        board_sleep_until_touch();
+
+        printf("[power] awake after %lus\n",
+                      (unsigned long)((millisNow() - sleptAtMs) / 1000));
+        Heap_log("woke");
+
+        // The screen first and the network after: someone is looking at it.
+        // The display wakes still showing the resting clock it went to sleep
+        // on, so the page is drawn over that before the backlight comes up.
+        display_sleep(false);
+        Battery_sample(true);
+        leaveRest();
+        StatusBar_refresh();
+        lv_obj_invalidate(lv_scr_act());
+        lv_refr_now(nullptr);
+        set_backlight(backlightActive);
+
+        // The touch that woke the panel is spent on waking it. Without this the
+        // finger still on the glass would press whatever the page has there.
+        lv_indev_t *pointer = lv_indev_get_next(nullptr);
+        if (pointer)
+        {
+            lv_indev_wait_release(pointer);
+        }
+        lastActivityMs = millisNow();
+
+        Net_resume();
     }
 }
 
@@ -181,7 +218,7 @@ bool Ui_canAllocateRow()
     // assert into a restart.
     //
     // The previous floors -- 40KB free, 18KB largest -- were written against
-    // ESP.getFreeHeap()/getMaxAllocHeap(), which include IRAM this cannot use.
+    // heap_caps_get_free_size(MALLOC_CAP_INTERNAL)/getMaxAllocHeap(), which include IRAM this cannot use.
     // getMaxAllocHeap() reads a fixed 36852 on this board, so the second test
     // was always true and the guard never refused anything. See App/Heap.h.
     //
@@ -197,7 +234,7 @@ bool Ui_canAllocateRow()
     return Heap_free() > MinFreeHeapForRow && Heap_largest() > MinLargestBlockForRow;
 }
 
-bool Ui_valueIsStruct(const String &value)
+bool Ui_valueIsStruct(const std::string &value)
 {
     // Cheaper than a parse, and a parse would be the wrong test anyway: a
     // payload that opens a document but is malformed is still not something to
@@ -258,18 +295,19 @@ void Ui_reloadSettings()
 {
     // Cached rather than read from the settings store on every tick: its get()
     // is a linear string search, and Ui_tick runs every pass of loop().
-    restAfterMs = (uint32_t)PersistentSettings.get("rest_after", "60").toInt() * 1000UL;
-    backlightActive = (uint8_t)constrain(PersistentSettings.get("bl_active", "200").toInt(), 8, 255);
-    backlightRest = (uint8_t)constrain(PersistentSettings.get("bl_rest", "24").toInt(), 0, 255);
+    restAfterMs = (uint32_t)Text::toLong(PersistentSettings.get("rest_after", "60")) * 1000UL;
+    backlightActive = (uint8_t)clampTo(Text::toLong(PersistentSettings.get("bl_active", "200")), 8, 255);
+    backlightRest = (uint8_t)clampTo(Text::toLong(PersistentSettings.get("bl_rest", "24")), 0, 255);
+    sleepAfterMs = (uint32_t)Text::toLong(PersistentSettings.get("sleep_after", "300")) * 1000UL;
 
     // A changed timeout counts from now, not from the last touch -- otherwise
     // shortening it could drop the panel into rest the instant the finger lifts.
-    lastActivityMs = millis();
+    lastActivityMs = millisNow();
 }
 
 void Ui_wake()
 {
-    lastActivityMs = millis();
+    lastActivityMs = millisNow();
     leaveRest();
 }
 
@@ -281,6 +319,11 @@ bool Ui_resting()
 void Ui_restNow()
 {
     enterRest();
+}
+
+void Ui_sleepNow()
+{
+    sleepRequested = true;
 }
 
 void Ui_show(UiPage page)
@@ -308,31 +351,33 @@ void Ui_show(UiPage page)
         }
     }
 
-    // The detail pages have no tab of their own; each keeps lit the list it was
-    // opened from, which is also where Back returns to.
-    int litTab = page;
-    if (page == UI_PAGE_DEVICE_DETAIL)
+    // The device's resources are only received while its page, or one opened
+    // from it, is up. Anywhere else the panel lets them go.
+    if (page != UI_PAGE_DEVICE_DETAIL && page != UI_PAGE_SENSORS && page != UI_PAGE_RESOURCE_DETAIL)
     {
-        litTab = UI_PAGE_DEVICES;
+        Net_unwatchDevice();
     }
-    else if (page == UI_PAGE_RESOURCE_DETAIL)
-    {
-        litTab = UI_PAGE_SENSORS;
-    }
-    for (int i = 0; i < UI_NAV_TAB_COUNT; ++i)
-    {
-        styleNavButton(navButtons[i], i == litTab);
-    }
+
+    const char *title = pageTitle(page);
+    StatusBar_setTitle(title ? title : gDeviceIdentity.getDeviceName().c_str(), page != UI_PAGE_MENU);
     dirty = true;
 }
 
-void Ui_showDevice(const String &deviceName)
+void Ui_back()
+{
+    if (currentPage != UI_PAGE_MENU)
+    {
+        Ui_show(parentOf(currentPage));
+    }
+}
+
+void Ui_showDevice(const std::string &deviceName)
 {
     ScreenDevice_open(deviceName);
     Ui_show(UI_PAGE_DEVICE_DETAIL);
 }
 
-void Ui_showResource(const String &deviceName, const String &resourceName)
+void Ui_showResource(const std::string &deviceName, const std::string &resourceName)
 {
     ScreenResource_open(deviceName, resourceName);
     Ui_show(UI_PAGE_RESOURCE_DETAIL);
@@ -348,7 +393,6 @@ void Ui_begin()
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
     StatusBar_create(screen);
-    lv_obj_t *nav = buildNavBar(screen);
 
     // The pages share one container so switching is a hide/show, not a rebuild.
     lv_obj_t *content = lv_obj_create(screen);
@@ -356,7 +400,6 @@ void Ui_begin()
     lv_obj_set_size(content, UI_CONTENT_W, UI_CONTENT_H);
     lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, UI_STATUSBAR_H);
     lv_obj_move_background(content);
-    lv_obj_move_foreground(nav);
 
     // TEMPORARY SCAFFOLDING. Building every screen at boot costs this panel
     // about 55KB, which it then holds for good -- and it has roughly 4KB left
@@ -366,6 +409,8 @@ void Ui_begin()
     // them being most of it is a very different fix from six being equal.
     // Remove these probes once that is known.
     Heap_log("ui: chrome");
+    pages[UI_PAGE_MENU] = ScreenMenu_create(content);
+    Heap_log("ui: menu");
     pages[UI_PAGE_FOCUS] = ScreenFocus_create(content);
     Heap_log("ui: focus");
     pages[UI_PAGE_DEVICES] = ScreenDevices_create(content);
@@ -386,14 +431,14 @@ void Ui_begin()
     Heap_log("ui: rest");
 
     touch_callback = onTouchDetected;
-    lastActivityMs = millis();
-    Ui_show(UI_PAGE_FOCUS);
+    lastActivityMs = millisNow();
+    Ui_show(UI_PAGE_MENU);
     set_backlight(backlightActive);
 }
 
 void Ui_tick()
 {
-    const uint32_t nowMs = millis();
+    const uint32_t nowMs = millisNow();
 
     // Wake on a touch that arrived after rest began. Not "a touch within the
     // idle timeout", which is what this used to test: that woke the panel
@@ -402,7 +447,7 @@ void Ui_tick()
     //
     // Any touch while resting is spent on waking up -- the overlay absorbs it --
     // so a stray tap on the dark screen cannot also press what is underneath.
-    // Signed difference so this holds across the millis() rollover.
+    // Signed difference so this holds across the millisNow() rollover.
     if (resting && (int32_t)(lastActivityMs - restEnteredMs) > (int32_t)RestWakeGraceMs)
     {
         leaveRest();
@@ -410,6 +455,24 @@ void Ui_tick()
     else if (!resting && restAfterMs > 0 && (nowMs - lastActivityMs) >= restAfterMs)
     {
         enterRest();
+    }
+
+    // Resting long enough becomes sleeping. This blocks until the next touch,
+    // and comes back active with the idle timer restarted, so there is nothing
+    // left of this pass worth finishing.
+    //
+    // Not while update mode is open: sleep takes the radio down, and a firmware
+    // push is exactly the time it must stay up. The panel keeps resting (the
+    // screen stays dim) until update mode closes, and sleeps then.
+    if (Ota_active())
+    {
+        sleepRequested = false;
+    }
+    else if (sleepRequested ||
+             (resting && sleepAfterMs > 0 && (nowMs - restEnteredMs) >= sleepAfterMs))
+    {
+        sleepUntilTouch();
+        return;
     }
 
     if ((nowMs - lastRefreshMs) < RefreshIntervalMs)
@@ -440,7 +503,11 @@ void Ui_tick()
         // out of the bound resources, whose optimistic writes and expiries
         // belong to no revision, and the settings screen shows live heap and
         // uptime that nothing bumps a revision for.
-        if (currentPage == UI_PAGE_FOCUS)
+        if (currentPage == UI_PAGE_MENU)
+        {
+            ScreenMenu_refresh();
+        }
+        else if (currentPage == UI_PAGE_FOCUS)
         {
             ScreenFocus_refresh();
         }
@@ -454,6 +521,9 @@ void Ui_tick()
 
     switch (currentPage)
     {
+    case UI_PAGE_MENU:
+        ScreenMenu_refresh();
+        break;
     case UI_PAGE_FOCUS:
         ScreenFocus_refresh();
         break;
