@@ -14,3 +14,9 @@
 // WiFi credentials the panel falls back to when none are stored in Configs.
 #define DEFAULT_SSID "your-ssid"
 #define DEFAULT_PASSWORD "your-wifi-password"
+
+// Pairing token for pushing firmware to the panel (src/App/Ota.cpp). Pick a long
+// random string, e.g. `python -c "import secrets;print(secrets.token_hex(16))"`,
+// and give the PC the same value: `set DASHLINK_TOKEN=...` or `--token`. Without
+// it update mode refuses to open.
+#define DASHLINK_TOKEN "change-me"
