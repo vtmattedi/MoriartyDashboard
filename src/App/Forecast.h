@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 #include <lvgl.h>
 
 // Weather for the focus screen.
@@ -31,7 +34,7 @@ struct ForecastData
     float maxTemp = 0;
     bool hasRain = false;
     int rainProb = 0;
-    String condition;
+    std::string condition;
     uint32_t updatedAt = 0; // now(), seconds
 };
 
@@ -39,7 +42,7 @@ struct ForecastData
 void Forecast_request();
 
 /// @brief Feed a Control/* message in. Returns true if it was a forecast reply.
-bool Forecast_handle(const String &topic, const String &payload);
+bool Forecast_handle(const std::string &topic, const std::string &payload);
 
 const ForecastData &Forecast_get();
 

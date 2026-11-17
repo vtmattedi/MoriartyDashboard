@@ -1,5 +1,5 @@
 #pragma once
-#include <Arduino.h>
+#include <string>
 // snow	Amount of snow is greater than zero
 // snow-showers-day	Periods of snow during the day
 // snow-showers-night	Periods of snow during the night
@@ -20,7 +20,7 @@
 /// @brief Converts a visual crossing icon to a weather icon ID
 /// @param icon The icon in the visual crossing api response
 /// @return the ID of the icon used in the weather_icons.h
-int visualCrossingToId (String icon)
+inline int visualCrossingToId(const std::string &icon)
 {
   if (icon == "snow") return 15; // w_snowfall_and_blue_cloud_16541
   if (icon == "snow-showers-day") return 20; // w_yellow_sun_and_snow_with_blue_cloud_16542

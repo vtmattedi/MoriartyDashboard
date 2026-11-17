@@ -1,11 +1,12 @@
 #include "Mqttp.h"
+#include "Sys.h"
 #include <NightMare.h>
 
 namespace
 {
     // One block of MQTTP_RESPONSE_MAX, allocated when a request is made and freed
     // by Mqttp_cancel() -- which the device page calls when it is left. Never
-    // grown, so it cannot fragment the heap the way a String reassembling chunks
+    // grown, so it cannot fragment the heap the way a std::string reassembling chunks
     // would (see Mqttp.h). Not static storage: that held 3KB permanently for a
     // page that is almost never open, out of the same heap the TLS handshake
     // needs.
@@ -17,17 +18,17 @@ namespace
     uint32_t revision = 1;
     uint32_t deadline = 0;
 
-    String currentDevice;
-    String currentCommand;
+    std::string currentDevice;
+    std::string currentCommand;
     /// The device whose reply space is currently subscribed, and the filter it
     /// was subscribed under.
-    String listeningDevice;
-    String listeningFilter;
+    std::string listeningDevice;
+    std::string listeningFilter;
     /// The reply topic of the request in flight, lowercased for matching. The
     /// firmware derives the reply topic from the request topic, so the casing
     /// does come back as it was sent -- the lowercase compare is only belt and
     /// braces against a device that rebuilds it from its own name.
-    String expectedTopicLower;
+    std::string expectedTopicLower;
 
     void resetBuffer()
     {
@@ -40,7 +41,7 @@ namespace
     }
 
     /// Append what fits, and remember if anything did not.
-    void appendChunk(const String &data)
+    void appendChunk(const std::string &data)
     {
         if (!responseBuffer)
         {
@@ -69,7 +70,7 @@ namespace
     }
 }
 
-bool Mqttp_listenTo(const String &device)
+bool Mqttp_listenTo(const std::string &device)
 {
     if (listeningDevice == device)
     {
@@ -84,7 +85,7 @@ bool Mqttp_listenTo(const String &device)
     // One level of wildcard, covering every id this panel might use on that
     // device -- and only that device, so the panel does not carry the rest of
     // the network's command traffic through its inbox.
-    const String filter = device + "/console/controlled/+/out";
+    const std::string filter = device + "/console/controlled/+/out";
     if (!NightMare::Subscribe(filter.c_str()))
     {
         return false;
@@ -105,7 +106,7 @@ void Mqttp_stopListening()
     listeningDevice = "";
 }
 
-bool Mqttp_request(const String &device, const String &command)
+bool Mqttp_request(const std::string &device, const std::string &command)
 {
     if (!device.length() || !command.length() ||
         NightMare::GetConnectionState() != NightMare::ConnectionState::CONNECTED)
@@ -144,16 +145,16 @@ bool Mqttp_request(const String &device, const String &command)
     currentDevice = device;
     currentCommand = command;
 
-    const String base = device + "/console/controlled/" + id;
+    const std::string base = device + "/console/controlled/" + id;
     expectedTopicLower = base + "/out";
-    expectedTopicLower.toLowerCase();
+    Text::toLower(expectedTopicLower);
 
     resetBuffer();
     state = MQTTP_PENDING;
-    deadline = millis() + MQTTP_TIMEOUT_MS;
+    deadline = millisNow() + MQTTP_TIMEOUT_MS;
     revision++;
 
-    const String topic = base + "/in";
+    const std::string topic = base + "/in";
     if (!NightMare::Publish(topic.c_str(),
                             reinterpret_cast<const uint8_t *>(command.c_str()),
                             command.length(), false))
@@ -180,22 +181,22 @@ void Mqttp_tick()
     {
         return;
     }
-    // Unsigned comparison, so this survives the millis() rollover.
-    if ((int32_t)(millis() - deadline) >= 0)
+    // Unsigned comparison, so this survives the millisNow() rollover.
+    if ((int32_t)(millisNow() - deadline) >= 0)
     {
         finish(MQTTP_TIMEOUT);
     }
 }
 
-bool Mqttp_handleMessage(const String &topic, const String &payload)
+bool Mqttp_handleMessage(const std::string &topic, const std::string &payload)
 {
     if (state != MQTTP_PENDING || !expectedTopicLower.length())
     {
         return false;
     }
 
-    String lowered = topic;
-    lowered.toLowerCase();
+    std::string lowered = topic;
+    Text::toLower(lowered);
     if (lowered != expectedTopicLower)
     {
         return false;
@@ -203,14 +204,15 @@ bool Mqttp_handleMessage(const String &topic, const String &payload)
 
     // Unchunked: the whole reply in one message. Anything at or below the
     // sender's 512-byte chunk size arrives this way.
-    if (!payload.startsWith(";;"))
+    if (!Text::startsWith(payload, ";;"))
     {
         appendChunk(payload);
         finish(MQTTP_DONE);
         return true;
     }
 
-    const int headerEnd = payload.indexOf(";;", 2);
+    const size_t headerFound = payload.find(";;", 2);
+    const int headerEnd = headerFound == std::string::npos ? -1 : (int)headerFound;
     if (headerEnd < 0)
     {
         // Starts like a chunk header but is not one; take it at face value.
@@ -219,10 +221,10 @@ bool Mqttp_handleMessage(const String &topic, const String &payload)
         return true;
     }
 
-    const String header = payload.substring(2, headerEnd);
+    const std::string header = Text::slice(payload, 2, headerEnd);
     // The data may itself contain ";;", so everything past the header belongs
     // to the payload -- do not split on further delimiters.
-    const String data = payload.substring(headerEnd + 2);
+    const std::string data = Text::slice(payload, headerEnd + 2);
 
     if (header == "error")
     {
@@ -231,7 +233,7 @@ bool Mqttp_handleMessage(const String &topic, const String &payload)
         return true;
     }
 
-    const int slash = header.indexOf('/');
+    const int slash = Text::indexOf(header, '/');
     if (slash < 0)
     {
         appendChunk(data);
@@ -239,8 +241,8 @@ bool Mqttp_handleMessage(const String &topic, const String &payload)
         return true;
     }
 
-    const long current = header.substring(0, slash).toInt();
-    const long total = header.substring(slash + 1).toInt();
+    const long current = Text::toLong(Text::slice(header, 0, slash));
+    const long total = Text::toLong(Text::slice(header, slash + 1));
 
     appendChunk(data);
     revision++;
@@ -253,7 +255,7 @@ bool Mqttp_handleMessage(const String &topic, const String &payload)
     {
         // Each chunk proves the device is still answering, so give it room to
         // finish rather than timing out mid-transfer on a long reply.
-        deadline = millis() + MQTTP_TIMEOUT_MS;
+        deadline = millisNow() + MQTTP_TIMEOUT_MS;
     }
     return true;
 }
@@ -273,12 +275,12 @@ bool Mqttp_truncated()
     return truncated;
 }
 
-const String &Mqttp_command()
+const std::string &Mqttp_command()
 {
     return currentCommand;
 }
 
-const String &Mqttp_device()
+const std::string &Mqttp_device()
 {
     return currentDevice;
 }

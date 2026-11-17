@@ -16,8 +16,14 @@ namespace NMHardware
  * physically mounted on that PCB, so all connections below are internal to
  * the same assembly.
  *
- * No connectors are required for the currently represented topology because
- * no connection leaves the board.
+ * The one exception in fact, though not in this description, is the battery
+ * divider: two 1M resistors added with the enclosure, from the cell to GPIO35
+ * on the board's P3 header. It is listed among the board's devices rather than
+ * as a second assembly behind a connector, because that is all it is -- one
+ * net onto one pin -- and modelling the header for it would say less, not more.
+ *
+ * Pin numbers here are copied from lib/boardstuff/boardstuff.h, not included
+ * from it; the two change together.
  *
  * Electrical nets are inferred by NightMare from the connection graph.
  */
@@ -60,6 +66,9 @@ inline Profile projectProfile()
 
         // Speaker
         {"GPIO26"},
+
+        // Battery divider
+        {"GPIO35"},
     };
 
     /*
@@ -136,6 +145,16 @@ inline Profile projectProfile()
 
     /*
      * =====================================================================
+     * Battery voltage divider (1M / 1M, added with the enclosure)
+     * =====================================================================
+     */
+
+    static const Terminal batterySenseTerminals[] = {
+        {"OUT"},
+    };
+
+    /*
+     * =====================================================================
      * Devices physically contained by the ESP32-3248S035C PCB
      * =====================================================================
      */
@@ -202,6 +221,15 @@ inline Profile projectProfile()
             "Speaker",
             "speaker",
             "Speaker",
+        },
+
+        {
+            "battery_sense",
+            batterySenseTerminals,
+            sizeof(batterySenseTerminals) / sizeof(batterySenseTerminals[0]),
+            "Battery voltage divider",
+            "sensor",
+            "1M/1M divider",
         },
     };
 
@@ -364,6 +392,19 @@ inline Profile projectProfile()
         {
             {"", EndpointKind::DeviceTerminal, "mcu", "GPIO26"},
             {"", EndpointKind::DeviceTerminal, "speaker", "SIGNAL"},
+        },
+
+        /*
+         * ---------------------------------------------------------------
+         * ESP32 -> battery divider
+         *
+         * GPIO35 -> OUT (half the cell voltage)
+         * ---------------------------------------------------------------
+         */
+
+        {
+            {"", EndpointKind::DeviceTerminal, "mcu", "GPIO35"},
+            {"", EndpointKind::DeviceTerminal, "battery_sense", "OUT"},
         },
     };
 

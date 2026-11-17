@@ -1,0 +1,63 @@
+# Kconfig defaults for the Dashboard on the Sunton ESP32-3248S035C (ESP32-WROOM-32, 4MB flash, no PSRAM).
+#
+# This file is the reason for building on native ESP-IDF: with the Arduino core these were fixed inside prebuilt
+# libraries. Everything here is a starting point chosen from how the firmware is built, not a measurement on the
+# board; HEAP on the console is how to judge a change.
+
+# --- Flash -------------------------------------------------------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+# The app has to fit a 0x1F0000 OTA slot (src/OtaDual.csv), and it is close: optimise for size.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+# IDF's own INFO logging costs flash for the strings and floods the console the panel's own lines are read on.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# --- Updates ---------------------------------------------------------------------------------------------------------
+# A pushed image boots on probation and is thrown out if it resets before App/Ota.cpp calls it good (20 s of a running
+# main loop). The bootloader does the throwing, so the first image with this has to go on over the cable.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- Timing and tasks ----------------------------------------------------------------------------------------------------
+# 1ms ticks, as the Arduino core had: the main loop sleeps 5ms between LVGL passes, which at the default 100Hz would
+# round to a 10ms frame.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Everything the panel does -- LVGL, the screens, the Scheduler's jobs, the console -- runs on the main task
+# (src/main.cpp). The default 3.5KB is nowhere near enough for an LVGL redraw; the Arduino loop task had 8KB.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+# On the second core, where the Arduino core ran loop(): the Wi-Fi and lwIP tasks live on the first, and a long LVGL
+# redraw should not be what they wait behind.
+CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
+# Wi-Fi event handlers run here, and the library's scan-done handler keeps its AP record array on this stack.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=6144
+
+# --- Memory ----------------------------------------------------------------------------------------------------------------
+# Heap is the scarce resource: no PSRAM, and LVGL, the Wi-Fi driver and lwIP share about 290KB.
+#
+# Wi-Fi buffers. The panel's traffic is small frames at a low rate (ESP-NOW to the gateway, SNTP), never a stream, so
+# the pools are cut to about a third of the defaults. Each static RX buffer is 1.6KB held for good; the dynamic ones
+# are a ceiling on what a burst may take from the heap.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+# The panel is only ever a station.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# Functions that are not ISR-safe run from flash instead of IRAM, which gives the RAM back to the heap.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+
+# --- Display -------------------------------------------------------------------------------------------------------------
+# The SPI interrupt ends every screen transfer by calling back into esp_lcd and from there into LVGL
+# (lib/boardstuff, onFlushDone), and that code is in flash. With the ISR in IRAM it would still fire while the flash
+# cache is off -- any settings write does that -- and jump straight into code that cannot be read. Out of IRAM, the
+# interrupt simply waits the few milliseconds until the cache is back.
+CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+CONFIG_SPI_MASTER_IN_IRAM=n
+
+# --- Not enabled, deliberately ------------------------------------------------------------------------------------------
+# Automatic light sleep (CONFIG_PM_ENABLE + CONFIG_FREERTOS_USE_TICKLESS_IDLE) would lower the draw of the active and
+# resting stages, and is the next thing worth trying for battery life. It is left off until the sleep stage that does
+# exist (lib/boardstuff, board_sleep_until_touch) has been seen working on hardware: it changes SPI, I2C and ESP-NOW
+# timing all at once, and one unknown at a time is enough.

@@ -1,4 +1,5 @@
 #include "AcClient.h"
+#include "Sys.h"
 #include "Targets.h"
 
 #include <NightMare.h>
@@ -44,15 +45,18 @@ namespace
         {"minutes", NetValueType::INTEGER},
     };
 
-    RemoteAction acManualSync(String(), ManualSyncArgs,
+    // Named after what they are called on the controller. The library wants a
+    // non-empty local name even though setSource() points the action elsewhere
+    // afterwards; a nameless one is refused when it is bound.
+    RemoteAction acManualSync(ActManualSync, ManualSyncArgs,
                               sizeof(ManualSyncArgs) / sizeof(ManualSyncArgs[0]));
-    RemoteAction acSleep(String(), SleepArgs, sizeof(SleepArgs) / sizeof(SleepArgs[0]));
+    RemoteAction acSleep(ActSleep, SleepArgs, sizeof(SleepArgs) / sizeof(SleepArgs[0]));
 
     /// The last device every resource was pointed at, so a revision bump that
     /// changed some other role does not tear down subscriptions needlessly --
     /// setSource() drops everything learned from the old source, including
     /// retained state that would then have to be replayed.
-    String appliedDevice;
+    std::string appliedDevice;
     bool applied = false;
 
     bool bound()
@@ -106,7 +110,7 @@ void AcClient_begin()
 
 void AcClient_applyTargets()
 {
-    const String &device = Targets_device(TARGET_SLOT_AC);
+    const std::string &device = Targets_device(TARGET_SLOT_AC);
     if (applied && device == appliedDevice)
     {
         return;

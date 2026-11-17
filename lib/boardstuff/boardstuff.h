@@ -1,12 +1,15 @@
 #pragma once
 
-// Board support for the Sunton ESP32-3248S035C wall panel:
-//   ST7796 320x480 SPI panel, GT911 capacitive touch, RGB status LED,
-//   PWM backlight, CDS light sensor, speaker, microSD slot.
+// Board support for the Sunton ESP32-3248S035C panel, in its battery enclosure:
+//   ST7796 320x480 SPI panel, GT911 capacitive touch, RGB status LED (held
+//   off), PWM backlight, CDS light sensor, speaker, microSD slot -- plus the one
+//   thing the enclosure adds, a battery divider on GPIO 35.
 //
-// The panel itself is driven through TFT_eSPI (configured in
-// lib/TFT_eSPI/User_Setup.h); everything else is handled here. LVGL is brought
-// up by lvgl_begin(), which owns the display and input driver registration.
+// Native ESP-IDF, no Arduino: the panel goes through esp_lcd's SPI panel-IO,
+// touch through the I2C master driver, the backlight and LED through LEDC, and
+// the two analogue inputs through the one-shot ADC driver with the chip's
+// factory calibration. LVGL is brought up by lvgl_begin(), which owns the
+// display and input driver registration.
 
 #ifndef ESP32_3248S035C
 #define ESP32_3248S035C
@@ -14,11 +17,10 @@
 
 #if !defined(TFT_ORIENTATION_PORTRAIT) && !defined(TFT_ORIENTATION_LANDSCAPE) &&   \
     !defined(TFT_ORIENTATION_PORTRAIT_INV) && !defined(TFT_ORIENTATION_LANDSCAPE_INV)
-#define TFT_ORIENTATION_LANDSCAPE
+#define TFT_ORIENTATION_PORTRAIT
 #endif
 
-#include <Arduino.h>
-#include <Wire.h>
+#include <stdint.h>
 #include <lvgl.h>
 
 #ifdef ESP32_3248S035C
@@ -30,12 +32,13 @@
 #define ST7796_SPI_MISO 12
 #define ST7796_PIN_CS 15
 #define ST7796_PIN_DC 2
-#define ST7796_SPI_FREQ 80000000
+// HSPI, on its native pins. 40MHz is what the panel was actually clocked at
+// before the port: the old setup asked for 65MHz, which the SPI divider rounds
+// down to this.
+#define ST7796_SPI_HOST SPI2_HOST
+#define ST7796_SPI_FREQ 40000000
 #define ST7796_PIN_BL 27
-#define ST7796_PWM_CHANNEL_BL 12
-#define ST7796_PWM_FREQ_BL 5000
-#define ST7796_PWM_BITS_BL 8
-#define ST7796_PWM_MAX_BL ((1 << ST7796_PWM_BITS_BL) - 1)
+#define ST7796_PWM_FREQ_BL 2500
 #define GT911
 #define GT911_IIC_SDA 33
 #define GT911_IIC_SCL 32
@@ -50,24 +53,33 @@
 #if !defined(TFT_ORIENTATION_PORTRAIT) && !defined(TFT_ORIENTATION_LANDSCAPE) && !defined(TFT_ORIENTATION_PORTRAIT_INV) && !defined(TFT_ORIENTATION_LANDSCAPE_INV)
 #error Please define orientation: TFT_ORIENTATION_PORTRAIT, TFT_ORIENTATION_LANDSCAPE, TFT_ORIENTATION_PORTRAIT_INV or TFT_ORIENTATION_LANDSCAPE_INV
 #endif
-
-extern TwoWire i2c_gt911;
 #endif
 
-// Build in RGB LED
+// Built-in RGB LED, common-anode. Not used: board_init() holds all three pins
+// high, which is off, and nothing turns it on -- a lit LED is battery spent on
+// nothing. There is deliberately no function to drive it.
 #define LED_PIN_R 4
 #define LED_PIN_G 16
 #define LED_PIN_B 17
-// PWM channels for RGB
-#define LED_PWM_FREQ 5000
-#define LED_PWM_CHANNEL_R 13
-#define LED_PWM_CHANNEL_G 14
-#define LED_PWM_CHANNEL_B 15
-#define LED_PWM_BITS 8
-#define LED_PWM_MAX ((1 << LED_PWM_BITS) - 1)
 
-// Photo resistor
-#define CDS_PIN 34 // ANALOG_PIN_0
+// Photo resistor: ADC1 channel 6
+#define CDS_PIN 34
+
+// Battery sense, added with the enclosure: the cell's positive terminal through
+// a 1M / 1M divider to GPIO 35 (ADC1 channel 7, input-only, on the P3 header).
+// ADC1 on purpose -- ADC2 is unusable while the Wi-Fi driver is running.
+//
+// The pin therefore sees half the cell: 2.1V at a full 4.2V, inside the 11dB
+// range. BAT_DIVIDER_MILLI is (Rtop + Rbottom) / Rbottom in thousandths, so a
+// different pair of resistors, or trimming against a multimeter, is this one
+// number.
+//
+// Two megohms draws about 2uA, which is why the values are that large -- and
+// also why the reading needs help: 500k of source impedance cannot charge the
+// ADC's sampling capacitor in time, and the pin reads low and noisy unless
+// something holds the node steady. 100nF from GPIO 35 to ground does it.
+#define BAT_PIN 35
+#define BAT_DIVIDER_MILLI 2000
 
 // Audio out
 #define AUDIO_PIN 26
@@ -113,7 +125,7 @@ extern TwoWire i2c_gt911;
 #endif
 
 // Height in pixels of the LVGL render buffer, at 2 bytes per pixel across the
-// full screen width: 12 lines of a 480px-wide landscape screen is ~11.5KB.
+// full screen width: 12 lines of the 320px-wide portrait screen is ~7.7KB.
 //
 // Keep this small. The board has no PSRAM, so this competes directly with the
 // WiFi stack and with mbedTLS, whose handshake needs tens of KB contiguous. A
@@ -121,7 +133,8 @@ extern TwoWire i2c_gt911;
 // static UI, and it will starve the MQTT connection long before it is missed.
 #define LVGL_BUFFER_LINES 12
 
-/// @brief Bring up the panel pins, backlight, RGB LED and touch controller.
+/// @brief Bring up the panel pins, backlight, light sensor and touch controller,
+/// and hold the RGB LED off.
 /// Must be called before lvgl_begin().
 void board_init();
 
@@ -132,15 +145,37 @@ void lvgl_begin();
 /// @brief Pump LVGL's timers. Call from loop() as often as possible.
 void lvgl_tick();
 
-void lvgl_touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data);
-void set_led(uint8_t red, uint8_t green, uint8_t blue);
-void set_led(uint32_t hex_code);
 
 /// @brief Set the backlight level, 0 (off) to 255 (full).
 void set_backlight(uint8_t brightness);
 
-/// @brief Read the ambient light sensor, 0-4095. Higher is brighter.
+/// @brief Read the ambient light sensor, raw, 0-4095.
 uint16_t read_light_sensor();
+
+/// @brief Battery voltage in millivolts, already scaled back up through the
+/// divider. Averaged over a burst of samples; around 0 with no cell fitted.
+uint16_t read_battery_mv();
+
+/// @brief Put the ST7796 into its sleep-in state, or bring it back. The panel
+/// keeps its frame memory while asleep. Waking blocks for the 120ms the
+/// controller needs before it accepts anything else. The backlight is separate:
+/// see set_backlight().
+void display_sleep(bool asleep);
+
+/// @brief Light-sleep the CPU until the touch panel is touched.
+///
+/// Blocks for as long as that takes. The caller is expected to have already
+/// switched off everything it owns -- radio, backlight, display -- because this
+/// only stops the processor: it wakes on a timer a few times a second, asks the
+/// GT911 over I2C whether anything happened, and goes back to sleep. RAM and
+/// every peripheral's configuration survive, so returning from this is a
+/// continuation, not a boot.
+///
+/// A timer and a poll rather than a wake-up pin, because this file knows of no
+/// pin to use: the GT911's interrupt line is not among the connections it
+/// drives, and a true deep sleep could only be woken through an RTC-capable
+/// GPIO.
+void board_sleep_until_touch();
 
 /// @brief If not null, the pointed function is called every time a touch is detected.
 extern void (*touch_callback)();

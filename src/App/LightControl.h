@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // The two single-resource roles: a plain light and a colour light.
 //

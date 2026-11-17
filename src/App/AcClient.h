@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // The air conditioner bound to TARGET_SLOT_AC.
 //
@@ -27,9 +30,9 @@
 //
 // Threading: the resource values are plain scalars written by the MQTT task when
 // owner state arrives and read by loop() to draw. Each is a single aligned load
-// or store, so no reading here can tear. Nothing in this module is a String for
+// or store, so no reading here can tear. Nothing in this module is a std::string for
 // that reason -- the controller's `ac_status` document is deliberately not
-// consumed, because two tasks touching one String is what corrupts the heap.
+// consumed, because two tasks touching one std::string is what corrupts the heap.
 
 /// The controller's own state machine, as published on `ac_state`.
 enum AcState : int8_t

@@ -1,4 +1,5 @@
 #include "LightControl.h"
+#include "Sys.h"
 #include "Targets.h"
 #include "Registry.h"
 
@@ -11,10 +12,10 @@ namespace
     RemoteState<bool> light{"light"};
     RemoteState<uint32_t> rgb{"rgb"};
 
-    String appliedLightDevice;
-    String appliedLightResource;
-    String appliedRgbDevice;
-    String appliedRgbResource;
+    std::string appliedLightDevice;
+    std::string appliedLightResource;
+    std::string appliedRgbDevice;
+    std::string appliedRgbResource;
     bool applied = false;
 
     /// The colour and level last chosen here. Not the truth -- the device is --
@@ -94,10 +95,10 @@ void LightControl_begin()
 
 void LightControl_applyTargets()
 {
-    const String &lightDevice = Targets_device(TARGET_SLOT_LIGHT);
-    const String &lightResource = Targets_resource(TARGET_SLOT_LIGHT);
-    const String &rgbDevice = Targets_device(TARGET_SLOT_RGB);
-    const String &rgbResource = Targets_resource(TARGET_SLOT_RGB);
+    const std::string &lightDevice = Targets_device(TARGET_SLOT_LIGHT);
+    const std::string &lightResource = Targets_resource(TARGET_SLOT_LIGHT);
+    const std::string &rgbDevice = Targets_device(TARGET_SLOT_RGB);
+    const std::string &rgbResource = Targets_resource(TARGET_SLOT_RGB);
 
     // Each half is retargeted only when its own address moved: setSource() drops
     // everything learned from the old source, and a needless one would blank a
@@ -129,7 +130,7 @@ void LightControl_mirrorToRegistry()
     {
         Registry_noteResource(Targets_device(TARGET_SLOT_RGB),
                               Targets_resource(TARGET_SLOT_RGB),
-                              String(published()));
+                              std::to_string(published()));
     }
 }
 

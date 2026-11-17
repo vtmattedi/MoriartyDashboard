@@ -6,7 +6,7 @@ depends on. Registry dependencies live in `platformio.ini` under `lib_deps`.
 
 | Folder        | What it is                                                                                |
 | ------------- | ----------------------------------------------------------------------------------------- |
-| `boardstuff/` | Board support for the Sunton ESP32-3248S035C: ST7796 panel bring-up, GT911 touch, RGB LED, PWM backlight, and the LVGL display/input driver registration. Project-specific, not upstream. |
+| `boardstuff/` | Board support for the Sunton ESP32-3248S035C on native ESP-IDF drivers (esp_lcd SPI panel-IO, I2C master, LEDC, one-shot ADC): ST7796 panel bring-up, GT911 touch, RGB LED, PWM backlight, the battery divider, display sleep and the touch-woken light sleep, and the LVGL display/input driver registration. Project-specific, not upstream. |
 | `lvgl/`       | LVGL 8.3.6. Pinned: LVGL 9 changed the driver API that `boardstuff` registers against.     |
 | `Time-master/`| The Arduino Time library (`TimeLib.h`), required by NightMareNetwork's `ServerVariable`.   |
 | `lv_conf.h`   | LVGL's configuration. It sits beside `lvgl/` rather than inside it so the library folder stays a clean checkout; `platformio.ini` puts `lib/` on the include path and sets `LV_CONF_INCLUDE_SIMPLE` so LVGL finds it. |

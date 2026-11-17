@@ -1,4 +1,5 @@
 #include "Heap.h"
+#include "Sys.h"
 #include "Net.h"
 
 #include <esp_heap_caps.h>
@@ -20,7 +21,7 @@ size_t Heap_minFree()
 
 size_t Heap_freeInternal()
 {
-    return ESP.getFreeHeap();
+    return heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 }
 
 void Heap_log(const char *stage)
@@ -32,7 +33,7 @@ void Heap_log(const char *stage)
     // "internal" is printed last and deliberately labelled, so the number every
     // other ESP32 tool shows is visible without being mistaken for usable
     // memory. The gap between it and "free" is IRAM.
-    Serial.printf("[heap] %-14s free=%6u min=%6u largest=%6u dropped=%u (internal=%u)\n",
+    printf("[heap] %-14s free=%6u min=%6u largest=%6u dropped=%u (internal=%u)\n",
                   stage, (unsigned)Heap_free(), (unsigned)Heap_minFree(),
                   (unsigned)Heap_largest(), (unsigned)Net_droppedMessages(),
                   (unsigned)Heap_freeInternal());

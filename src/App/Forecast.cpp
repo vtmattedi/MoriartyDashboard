@@ -1,4 +1,5 @@
 #include "Forecast.h"
+#include "Sys.h"
 #include "Net.h"
 #include <ArduinoJson.h>
 #include <NightMare.h>
@@ -35,7 +36,7 @@ void Forecast_request()
     Net_controlRequest("forecast");
 }
 
-bool Forecast_handle(const String &topic, const String &payload)
+bool Forecast_handle(const std::string &topic, const std::string &payload)
 {
     if (topic != "Control/forecast")
     {
@@ -58,7 +59,7 @@ bool Forecast_handle(const String &topic, const String &payload)
         // conditions the icon set has no art for.
         if (icon.is<const char *>())
         {
-            int mapped = visualCrossingToId(String(icon.as<const char *>()));
+            int mapped = visualCrossingToId(std::string(icon.as<const char *>()));
             next.iconId = mapped >= 0 ? mapped : -1;
         }
         else
@@ -94,7 +95,11 @@ bool Forecast_handle(const String &topic, const String &payload)
     }
     if (!condition.isNull())
     {
-        next.condition = condition.as<const char *>();
+        // Only a string is taken. A number here would come back as a null
+        // pointer, and unlike Arduino's String, std::string cannot be built
+        // from one.
+        const char *text = condition.as<const char *>();
+        next.condition = text ? text : "";
     }
 
     next.valid = next.hasTemp || next.iconId >= 0 || next.condition.length();

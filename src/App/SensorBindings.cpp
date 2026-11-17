@@ -1,4 +1,5 @@
 #include "SensorBindings.h"
+#include "Sys.h"
 #include "Registry.h"
 #include <NightMare.h>
 
@@ -6,8 +7,8 @@ namespace
 {
     struct Binding
     {
-        String device;
-        String resource;
+        std::string device;
+        std::string resource;
         bool inverted;
     };
 
@@ -51,7 +52,7 @@ void SensorBindings_load()
     revision++;
 }
 
-void SensorBindings_set(SensorSlot slot, const String &device, const String &resource, bool inverted)
+void SensorBindings_set(SensorSlot slot, const std::string &device, const std::string &resource, bool inverted)
 {
     if (!validSlot(slot))
     {
@@ -81,21 +82,21 @@ bool SensorBindings_isBound(SensorSlot slot)
     return validSlot(slot) && bindings[slot].device.length() && bindings[slot].resource.length();
 }
 
-bool SensorBindings_matches(SensorSlot slot, const String &device, const String &resource)
+bool SensorBindings_matches(SensorSlot slot, const std::string &device, const std::string &resource)
 {
     return SensorBindings_isBound(slot) && bindings[slot].device == device &&
            bindings[slot].resource == resource;
 }
 
-const String &SensorBindings_device(SensorSlot slot)
+const std::string &SensorBindings_device(SensorSlot slot)
 {
-    static const String empty;
+    static const std::string empty;
     return validSlot(slot) ? bindings[slot].device : empty;
 }
 
-const String &SensorBindings_resource(SensorSlot slot)
+const std::string &SensorBindings_resource(SensorSlot slot)
 {
-    static const String empty;
+    static const std::string empty;
     return validSlot(slot) ? bindings[slot].resource : empty;
 }
 
@@ -104,7 +105,7 @@ bool SensorBindings_inverted(SensorSlot slot)
     return validSlot(slot) && bindings[slot].inverted;
 }
 
-String SensorBindings_value(SensorSlot slot)
+std::string SensorBindings_value(SensorSlot slot)
 {
     if (!SensorBindings_isBound(slot))
     {
@@ -120,9 +121,9 @@ DoorState SensorBindings_doorState()
         return DOOR_UNBOUND;
     }
 
-    String value = SensorBindings_value(SENSOR_SLOT_DOOR);
-    value.trim();
-    value.toLowerCase();
+    std::string value = SensorBindings_value(SENSOR_SLOT_DOOR);
+    Text::trim(value);
+    Text::toLower(value);
 
     // The boolean codec's two spellings, and nothing else. Anything unexpected
     // is reported as unknown rather than guessed at: a wrong "closed" on a door

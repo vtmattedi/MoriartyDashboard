@@ -1,9 +1,13 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // How much memory the panel actually has.
 //
-// `ESP.getFreeHeap()` and `ESP.getMaxAllocHeap()` report MALLOC_CAP_INTERNAL,
+// The Arduino accessors this panel used to read -- `ESP.getFreeHeap()` and
+// `ESP.getMaxAllocHeap()` -- report MALLOC_CAP_INTERNAL,
 // which counts IRAM -- instruction RAM, addressable only in 32-bit words. No
 // malloc() serving a byte buffer can ever hand it out, so on this chip those
 // accessors read about 37KB higher than the memory anything here can use, and
@@ -33,7 +37,8 @@ size_t Heap_largest();
 /// @brief The low-water mark of Heap_free() since boot.
 size_t Heap_minFree();
 
-/// @brief Free bytes as ESP.getFreeHeap() counts them, IRAM included. For
+/// @brief Free bytes in MALLOC_CAP_INTERNAL, IRAM included -- what
+/// ESP.getFreeHeap() reported on the Arduino build. For
 /// comparison only -- never for a decision.
 size_t Heap_freeInternal();
 

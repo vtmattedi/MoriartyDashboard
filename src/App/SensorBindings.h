@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // Resources on the network that this panel has been pointed at for a specific
 // purpose. Chosen from a row on the Resources screen and persisted in the
@@ -39,7 +42,7 @@ void SensorBindings_load();
 
 /// @brief Point a slot at a resource. `inverted` only means anything for the
 /// door slot, where it flips the default reading of 1/true as "open".
-void SensorBindings_set(SensorSlot slot, const String &device, const String &resource, bool inverted);
+void SensorBindings_set(SensorSlot slot, const std::string &device, const std::string &resource, bool inverted);
 
 /// @brief Forget a slot's resource.
 void SensorBindings_clear(SensorSlot slot);
@@ -47,15 +50,15 @@ void SensorBindings_clear(SensorSlot slot);
 bool SensorBindings_isBound(SensorSlot slot);
 
 /// @brief Whether this is the resource in that slot.
-bool SensorBindings_matches(SensorSlot slot, const String &device, const String &resource);
+bool SensorBindings_matches(SensorSlot slot, const std::string &device, const std::string &resource);
 
-const String &SensorBindings_device(SensorSlot slot);
-const String &SensorBindings_resource(SensorSlot slot);
+const std::string &SensorBindings_device(SensorSlot slot);
+const std::string &SensorBindings_resource(SensorSlot slot);
 bool SensorBindings_inverted(SensorSlot slot);
 
 /// @brief The slot's latest value, read fresh from the registry. "" if unbound
 /// or nothing has arrived.
-String SensorBindings_value(SensorSlot slot);
+std::string SensorBindings_value(SensorSlot slot);
 
 /// @brief The door slot's value interpreted as a door state.
 DoorState SensorBindings_doorState();

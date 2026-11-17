@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // MQTTP-compatible correlated console request/response over the active
 // NightMare connection (ESP-NOW in this build).
@@ -25,7 +28,7 @@
 //    allocated when a request is made, freed by Mqttp_cancel(). The panel is a
 //    viewer, not a store: it holds one answer for one device for as long as it
 //    is on screen, and nothing accumulates. Reassembling chunks into a growing
-//    String would fragment this board's small heap. Mqttp_request() returns
+//    std::string would fragment this board's small heap. Mqttp_request() returns
 //    false if its fixed block cannot be allocated.
 
 /// Cap on a reassembled reply. Real answers run 200B to ~4KB; the backend's
@@ -49,7 +52,7 @@ enum MqttpState
 /// @brief Start listening for one device's correlated replies, well before any
 /// request is made. Idempotent, and it replaces whatever was being listened to.
 /// @return False if the subscription was refused.
-bool Mqttp_listenTo(const String &device);
+bool Mqttp_listenTo(const std::string &device);
 
 /// @brief Give the subscription back. Also abandons anything in flight.
 void Mqttp_stopListening();
@@ -61,7 +64,7 @@ void Mqttp_stopListening();
 /// to have subscribed to that exact string.
 /// @return False if the gateway is down, the subscription was refused, or the
 /// arguments are empty.
-bool Mqttp_request(const String &device, const String &command);
+bool Mqttp_request(const std::string &device, const std::string &command);
 
 /// @brief Abandon any pending request and clear the buffer.
 void Mqttp_cancel();
@@ -70,7 +73,7 @@ void Mqttp_cancel();
 void Mqttp_tick();
 
 /// @brief Offer an incoming network message. True if it belonged to this module.
-bool Mqttp_handleMessage(const String &topic, const String &payload);
+bool Mqttp_handleMessage(const std::string &topic, const std::string &payload);
 
 MqttpState Mqttp_state();
 
@@ -81,10 +84,10 @@ const char *Mqttp_response();
 bool Mqttp_truncated();
 
 /// @brief The command of the current or last request, for labelling the view.
-const String &Mqttp_command();
+const std::string &Mqttp_command();
 
 /// @brief The device the current or last request was addressed to.
-const String &Mqttp_device();
+const std::string &Mqttp_device();
 
 /// @brief Bumped whenever the state or the buffer changes.
 uint32_t Mqttp_revision();
