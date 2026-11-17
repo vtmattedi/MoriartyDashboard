@@ -1,4 +1,5 @@
 #include "Registry.h"
+#include "Sys.h"
 #include <NightMare.h>
 #include <ArduinoJson.h>
 
@@ -52,7 +53,7 @@ namespace
         return oldest;
     }
 
-    DeviceEntry *findDevice(const String &name)
+    DeviceEntry *findDevice(const std::string &name)
     {
         for (int i = 0; i < deviceCount; ++i)
         {
@@ -64,7 +65,7 @@ namespace
         return nullptr;
     }
 
-    DeviceEntry *findOrCreateDevice(const String &name)
+    DeviceEntry *findOrCreateDevice(const std::string &name)
     {
         if (!name.length())
         {
@@ -93,7 +94,7 @@ namespace
         // Serial.printf, not LOG(): the info level is compiled out at this
         // project's NM_LOG_LEVEL, and discovery is exactly what you need to see
         // when the screens disagree with the broker. Same channel as [heap].
-        Serial.printf("[reg] +device   %s (%d/%d)\n", name.c_str(), deviceCount,
+        printf("[reg] +device   %s (%d/%d)\n", name.c_str(), deviceCount,
                       REGISTRY_MAX_DEVICES);
         devices[slot].name = name;
         devices[slot].hardware = "";
@@ -104,7 +105,7 @@ namespace
     }
 }
 
-void Registry_noteStatus(const String &device, const String &payload)
+void Registry_noteStatus(const std::string &device, const std::string &payload)
 {
     // An empty retained payload is a tombstone -- the MQTT way of deleting a
     // retained announcement -- not a status of its own. It must never bring a
@@ -150,7 +151,7 @@ void Registry_noteStatus(const String &device, const String &payload)
     JsonVariantConst hardware = doc["hardware"];
     if (hardware.is<const char *>())
     {
-        const String signature = hardware.as<String>();
+        const std::string signature = hardware.as<std::string>();
         if (entry->hardware != signature)
         {
             entry->hardware = signature;
@@ -161,7 +162,7 @@ void Registry_noteStatus(const String &device, const String &payload)
     entry->lastSeen = stamp();
 }
 
-void Registry_noteSeen(const String &device)
+void Registry_noteSeen(const std::string &device)
 {
     DeviceEntry *entry = findOrCreateDevice(device);
     if (entry)
@@ -170,14 +171,21 @@ void Registry_noteSeen(const String &device)
     }
 }
 
-void Registry_noteResource(const String &device, const String &resource, const String &value)
+void Registry_noteResource(const std::string &device, const std::string &resource, const std::string &value)
 {
     if (!device.length() || !resource.length())
     {
         return;
     }
 
-    Registry_noteSeen(device);
+    // Heard from, but never created by a resource: a device is a device because
+    // it announced itself on `status`. Resource traffic used to be able to
+    // create devices and so push real ones out of a full table.
+    DeviceEntry *known = findDevice(device);
+    if (known)
+    {
+        known->lastSeen = stamp();
+    }
 
     for (int i = 0; i < resourceCount; ++i)
     {
@@ -207,7 +215,7 @@ void Registry_noteResource(const String &device, const String &resource, const S
                     resources[slot].resource.c_str(), device.c_str(), resource.c_str());
     }
 
-    Serial.printf("[reg] +resource %s/%s = %s (%d/%d)\n", device.c_str(), resource.c_str(),
+    printf("[reg] +resource %s/%s = %s (%d/%d)\n", device.c_str(), resource.c_str(),
                   value.c_str(), resourceCount, REGISTRY_MAX_RESOURCES);
     resources[slot].device = device;
     resources[slot].resource = resource;
@@ -230,12 +238,38 @@ const DeviceEntry *Registry_device(int index)
     return &devices[index];
 }
 
-const DeviceEntry *Registry_findDevice(const String &name)
+const DeviceEntry *Registry_findDevice(const std::string &name)
 {
     return findDevice(name);
 }
 
-void Registry_forgetDevice(const String &name)
+void Registry_dropResources(const std::string &device, bool (*keep)(const ResourceEntry &entry))
+{
+    int write = 0;
+    for (int read = 0; read < resourceCount; ++read)
+    {
+        if (resources[read].device == device && !(keep && keep(resources[read])))
+        {
+            continue;
+        }
+        if (write != read)
+        {
+            resources[write] = resources[read];
+        }
+        ++write;
+    }
+    for (int i = write; i < resourceCount; ++i)
+    {
+        resources[i] = ResourceEntry();
+    }
+    if (write != resourceCount)
+    {
+        resourceCount = write;
+        revision++;
+    }
+}
+
+void Registry_forgetDevice(const std::string &name)
 {
     if (!name.length())
     {
@@ -293,7 +327,7 @@ const ResourceEntry *Registry_resource(int index)
     return &resources[index];
 }
 
-String Registry_resourceValue(const String &device, const String &resource)
+std::string Registry_resourceValue(const std::string &device, const std::string &resource)
 {
     for (int i = 0; i < resourceCount; ++i)
     {
@@ -317,7 +351,7 @@ int Registry_evictedResources()
 
 void Registry_logSummary()
 {
-    Serial.printf("[reg] devices=%d/%d resources=%d/%d evicted=%d/%d\n", deviceCount,
+    printf("[reg] devices=%d/%d resources=%d/%d evicted=%d/%d\n", deviceCount,
                   REGISTRY_MAX_DEVICES, resourceCount, REGISTRY_MAX_RESOURCES, evictedDevices,
                   evictedResources);
 }
@@ -327,12 +361,12 @@ void Registry_logAll()
     Registry_logSummary();
     for (int i = 0; i < deviceCount; ++i)
     {
-        Serial.printf("[reg]   device  %-16s %-8s hw=%s\n", devices[i].name.c_str(),
+        printf("[reg]   device  %-16s %-8s hw=%s\n", devices[i].name.c_str(),
                       devices[i].online ? "online" : "offline", devices[i].hardware.c_str());
     }
     for (int i = 0; i < resourceCount; ++i)
     {
-        Serial.printf("[reg]   value   %s/%s = %s\n", resources[i].device.c_str(),
+        printf("[reg]   value   %s/%s = %s\n", resources[i].device.c_str(),
                       resources[i].resource.c_str(), resources[i].value.c_str());
     }
 }

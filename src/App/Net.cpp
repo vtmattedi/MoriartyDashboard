@@ -1,10 +1,13 @@
 #include "Net.h"
+#include "SensorBindings.h"
+#include "Sys.h"
 #include "Targets.h"
 #include "Registry.h"
 #include "Forecast.h"
 #include "Mqttp.h"
 #include "AcClient.h"
 #include "LightControl.h"
+#include "PcClient.h"
 #include "Heap.h"
 
 #include <NightMare.h>
@@ -42,7 +45,7 @@
 
 namespace
 {
-    bool publishText(const String &topic, const String &payload, bool retained = false)
+    bool publishText(const std::string &topic, const std::string &payload, bool retained = false)
     {
         return NightMare::Publish(topic.c_str(),
                                   reinterpret_cast<const uint8_t *>(payload.c_str()),
@@ -57,9 +60,11 @@ namespace
     /// chunk is at most 512 bytes plus its ";;n/total;;" header, and a resource
     /// value is capped by the protocol at 2048 but is in practice a number.
     constexpr size_t PayloadMax = 2304;
-    /// Total inbox storage. Holds ~100 typical resource states, or a burst of
-    /// several full MQTTP chunks at once.
-    constexpr size_t InboxBytes = 12 * 1024;
+    /// Total inbox storage. Holds the retained status of the whole network
+    /// replayed on connect (a couple of hundred bytes each), one device's
+    /// resources, or a burst of several full MQTTP chunks. It was 12KB when every
+    /// resource of every device came through here as well.
+    constexpr size_t InboxBytes = 8 * 1024;
     /// Per loop() pass, so a flood cannot starve LVGL of time to draw. A
     /// reconnect can replay retained state through the gateway at once, which
     /// is the burst this has to survive without dropping frames.
@@ -70,20 +75,100 @@ namespace
     /// scan is a string compare per registry entry.
     constexpr uint32_t MirrorIntervalMs = 1000;
 
-    // The panel's own subscriptions. The library takes only what its own
-    // features and bound resources need, so everything the Devices and
-    // Resources screens show is asked for here. Custom subscriptions are
-    // remembered in RAM and reinstalled on every reconnect, so this is done once.
+    // The panel's own standing subscriptions. The library takes what its own
+    // features and bound resources need; this is the rest of what the Devices
+    // screen shows -- who exists, and whether they are up.
+    //
+    // `+/status` alone is not enough: devices on ESP-NOW do not all announce a
+    // retained status, so some are only ever seen by what they publish. The
+    // resource wildcard is how those are found, and it is also what flooded the
+    // inbox when every message was queued -- so the radio callback now lets
+    // through only the first resource of a device not seen before (that is the
+    // discovery), and those of the devices the panel is using. See
+    // onEspNowMessage().
+    // Installed by Net_loop() on every connect, because the library does not
+    // remember them.
     const char *const Subscriptions[] = {
         "+/status",
         "+/resource/+/state",
         "Control/forecast",
     };
 
+    // --- Which resource messages are worth queueing --------------------------------------------------------
+    // Written by the loop task, read by the Wi-Fi task: sets of 32-bit name hashes in atomic slots (0 = empty),
+    // so no lock sits on the radio callback. A hash collision only means one device's resources are let
+    // through or dropped by mistake, never a crash.
+    constexpr int HashSlots = 64;
+    std::atomic<uint32_t> knownDevices[HashSlots];  // devices the registry has
+    std::atomic<uint32_t> wantedDevices[HashSlots]; // devices whose resources are used
+    std::atomic<uint32_t> droppedFiltered{0};       // deliberately not queued; not a loss
+
+    uint32_t hashName(const char *text, size_t length)
+    {
+        uint32_t h = 2166136261u;
+        for (size_t i = 0; i < length; ++i)
+        {
+            h = (h ^ (uint8_t)text[i]) * 16777619u;
+        }
+        return h ? h : 1;
+    }
+
+    bool inSet(std::atomic<uint32_t> *set, uint32_t h)
+    {
+        for (int i = 0; i < HashSlots; ++i)
+        {
+            if (set[i].load(std::memory_order_relaxed) == h)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void addToSet(std::atomic<uint32_t> *set, uint32_t h)
+    {
+        if (inSet(set, h))
+        {
+            return;
+        }
+        for (int i = 0; i < HashSlots; ++i)
+        {
+            uint32_t empty = 0;
+            if (set[i].compare_exchange_strong(empty, h))
+            {
+                return;
+            }
+        }
+        // Full: nothing is added, and the device keeps passing the filter as
+        // "not seen before". Harmless to correctness, worse for the inbox.
+    }
+
+    void removeFromSet(std::atomic<uint32_t> *set, uint32_t h)
+    {
+        for (int i = 0; i < HashSlots; ++i)
+        {
+            uint32_t expected = h;
+            set[i].compare_exchange_strong(expected, 0);
+        }
+    }
+
+    // The subscriptions that follow what the panel is doing: the open device's
+    // resources, and the two sensors it is bound to. Reconciled by
+    // syncDynamicSubscriptions().
+    constexpr int DynamicCount = 3;
+    std::string wantedFilter[DynamicCount];
+    std::string appliedFilter[DynamicCount];
+    std::string watchedDevice;
+    uint32_t dynamicRevision = 1;
+    uint32_t seenSensorRevision = 0;
+    uint32_t seenDynamicRevision = 0;
+    uint32_t nextDynamicTryMs = 0;
+
     RingbufHandle_t inbox = nullptr;
     std::atomic<uint32_t> droppedFull{0};
     std::atomic<uint32_t> droppedOversize{0};
     bool transportHooked = false;
+    uint32_t traceNextLinkMs = 0;
     bool wasConnected = false;
 
     uint32_t appliedTargetsRevision = 0;
@@ -121,6 +206,20 @@ namespace
 
         const size_t topicLength = strlen(topic);
 
+        // A resource of a device the registry already has, and that nothing
+        // here is using, is the bulk of the traffic and of no interest. Statuses
+        // and everything else go through untouched.
+        const char *slash = (const char *)memchr(topic, '/', topicLength);
+        if (slash && strncmp(slash + 1, "resource/", 9) == 0)
+        {
+            const uint32_t h = hashName(topic, (size_t)(slash - topic));
+            if (inSet(knownDevices, h) && !inSet(wantedDevices, h))
+            {
+                droppedFiltered++;
+                return;
+            }
+        }
+
         // Counted only once it is known to be something the panel wanted, so
         // the drop counter means "lost", not "ignored".
         if (topicLength > TopicMax || payloadLength > PayloadMax)
@@ -157,18 +256,89 @@ namespace
 
     /// Topic prefixes that are channels rather than devices, so they never end
     /// up in the device registry. Mirrors the backend's own ignore list.
-    bool isReservedName(const String &name)
+    bool isReservedName(const std::string &name)
     {
-        String lowered = name;
-        lowered.toLowerCase();
+        std::string lowered = name;
+        Text::toLower(lowered);
         return lowered == "control" || lowered == "n8n" || lowered == "all" ||
-               lowered.startsWith("$");
+               Text::startsWith(lowered, "$");
+    }
+
+    /// Whether the panel keeps this device's resources: it is the one whose page
+    /// is open, or it plays a role (the AC, the PC link) or holds a bound light,
+    /// colour or sensor.
+    bool deviceWanted(const std::string &device)
+    {
+        if (device == watchedDevice)
+        {
+            return true;
+        }
+        for (int slot = 0; slot < TARGET_SLOT_COUNT; ++slot)
+        {
+            if (Targets_configured((TargetSlot)slot) && Targets_device((TargetSlot)slot) == device)
+            {
+                return true;
+            }
+        }
+        for (int slot = 0; slot < SENSOR_SLOT_COUNT; ++slot)
+        {
+            if (SensorBindings_isBound((SensorSlot)slot) && SensorBindings_device((SensorSlot)slot) == device)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Rebuild the set the radio callback reads, whenever what the panel is
+    /// using may have changed.
+    void refreshWantedDevices()
+    {
+        static uint32_t seenTargets = 0, seenSensors = 0, seenDynamic = 0;
+        const uint32_t targets = Targets_revision();
+        const uint32_t sensors = SensorBindings_revision();
+        if (targets == seenTargets && sensors == seenSensors && dynamicRevision == seenDynamic)
+        {
+            return;
+        }
+        seenTargets = targets;
+        seenSensors = sensors;
+        seenDynamic = dynamicRevision;
+
+        uint32_t wanted[HashSlots];
+        int count = 0;
+        const auto add = [&](const std::string &name)
+        {
+            if (name.length() && count < HashSlots)
+            {
+                wanted[count++] = hashName(name.c_str(), name.length());
+            }
+        };
+        add(watchedDevice);
+        for (int slot = 0; slot < TARGET_SLOT_COUNT; ++slot)
+        {
+            if (Targets_configured((TargetSlot)slot))
+            {
+                add(Targets_device((TargetSlot)slot));
+            }
+        }
+        for (int slot = 0; slot < SENSOR_SLOT_COUNT; ++slot)
+        {
+            if (SensorBindings_isBound((SensorSlot)slot))
+            {
+                add(SensorBindings_device((SensorSlot)slot));
+            }
+        }
+        for (int i = 0; i < HashSlots; ++i)
+        {
+            wantedDevices[i].store(i < count ? wanted[i] : 0);
+        }
     }
 
     void route(const char *topicText, const char *payloadText)
     {
-        const String topic(topicText);
-        const String payload(payloadText);
+        const std::string topic(topicText);
+        const std::string payload(payloadText);
 
         // The low-level ESP-NOW callback is temporarily the only application
         // ingress hook in NightMareNetwork. Preserve normal framework routing
@@ -193,14 +363,14 @@ namespace
             return;
         }
 
-        const int firstSlash = topic.indexOf('/');
-        const String device = topic.substring(0, firstSlash);
+        const int firstSlash = Text::indexOf(topic, '/');
+        const std::string device = Text::slice(topic, 0, firstSlash);
         if (isReservedName(device))
         {
             return;
         }
 
-        const String rest = topic.substring(firstSlash + 1);
+        const std::string rest = Text::slice(topic, firstSlash + 1);
 
         if (rest == "status")
         {
@@ -212,7 +382,7 @@ namespace
         }
 
         // "resource/<name>/state", shape already checked on the MQTT task.
-        if (rest.startsWith("resource/"))
+        if (Text::startsWith(rest, "resource/"))
         {
             // An empty payload withdraws the retained state. The last known
             // value stays readable, which is what the protocol says a tombstone
@@ -223,10 +393,17 @@ namespace
                 return;
             }
             const int nameStart = sizeof("resource/") - 1;
-            const int nameEnd = rest.lastIndexOf('/');
+            const int nameEnd = Text::lastIndexOf(rest, '/');
             if (nameEnd > nameStart)
             {
-                Registry_noteResource(device, rest.substring(nameStart, nameEnd), payload);
+                // The device exists because it published; its resource is kept
+                // only if something is using it (see deviceWanted).
+                Registry_noteSeen(device);
+                addToSet(knownDevices, hashName(device.c_str(), device.length()));
+                if (deviceWanted(device))
+                {
+                    Registry_noteResource(device, Text::slice(rest, nameStart, nameEnd), payload);
+                }
             }
         }
     }
@@ -247,6 +424,127 @@ namespace
         // which.
         Registry_logSummary();
     }
+}
+
+namespace
+{
+    std::string resourceFilter(const std::string &device, const std::string &resource)
+    {
+        return device + "/resource/" + resource + "/state";
+    }
+
+    /// What the panel should be subscribed to beyond the standing set, and
+    /// subscribes or unsubscribes the difference. The library does not remember
+    /// subscriptions and refuses them while not connected, so this runs every
+    /// pass but only does anything when the wanted set or the link changed.
+    void syncDynamicSubscriptions(bool connected, bool justConnected)
+    {
+        if (justConnected)
+        {
+            // A new connection starts from nothing, whatever was applied before.
+            for (int i = 0; i < DynamicCount; ++i)
+            {
+                appliedFilter[i].clear();
+            }
+            seenDynamicRevision = 0;
+        }
+
+        const uint32_t sensors = SensorBindings_revision();
+        if (sensors != seenSensorRevision || dynamicRevision != seenDynamicRevision)
+        {
+            seenSensorRevision = sensors;
+            seenDynamicRevision = dynamicRevision;
+            wantedFilter[0] = watchedDevice.length() ? resourceFilter(watchedDevice, "+") : std::string();
+            for (int slot = 0; slot < SENSOR_SLOT_COUNT && slot + 1 < DynamicCount; ++slot)
+            {
+                wantedFilter[slot + 1] =
+                    SensorBindings_isBound((SensorSlot)slot)
+                        ? resourceFilter(SensorBindings_device((SensorSlot)slot),
+                                         SensorBindings_resource((SensorSlot)slot))
+                        : std::string();
+            }
+            nextDynamicTryMs = 0;
+        }
+
+        if (!connected || (int32_t)(millisNow() - nextDynamicTryMs) < 0)
+        {
+            return;
+        }
+        bool failed = false;
+        for (int i = 0; i < DynamicCount; ++i)
+        {
+            if (appliedFilter[i] == wantedFilter[i])
+            {
+                continue;
+            }
+            if (appliedFilter[i].length())
+            {
+                NightMare::Unsubscribe(appliedFilter[i].c_str());
+                appliedFilter[i].clear();
+            }
+            if (wantedFilter[i].length())
+            {
+                if (NightMare::Subscribe(wantedFilter[i].c_str()))
+                {
+                    appliedFilter[i] = wantedFilter[i];
+                }
+                else
+                {
+                    failed = true;
+                }
+            }
+        }
+        if (failed)
+        {
+            nextDynamicTryMs = millisNow() + 1000; // try again in a second, not every pass
+        }
+    }
+
+    /// What the panel keeps of a device when its page is left: the resources it
+    /// is using for something.
+    bool resourceInUse(const ResourceEntry &entry)
+    {
+        for (int slot = 0; slot < TARGET_SLOT_COUNT; ++slot)
+        {
+            if (Targets_configured((TargetSlot)slot) && Targets_device((TargetSlot)slot) == entry.device)
+            {
+                return true; // a role is bound to this device; its resources are the role's
+            }
+        }
+        for (int slot = 0; slot < SENSOR_SLOT_COUNT; ++slot)
+        {
+            if (SensorBindings_matches((SensorSlot)slot, entry.device, entry.resource))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+void Net_watchDevice(const std::string &deviceName)
+{
+    if (deviceName == watchedDevice)
+    {
+        return;
+    }
+    if (watchedDevice.length())
+    {
+        Registry_dropResources(watchedDevice, resourceInUse);
+    }
+    watchedDevice = deviceName;
+    dynamicRevision++;
+}
+
+void Net_unwatchDevice()
+{
+    if (!watchedDevice.length())
+    {
+        return;
+    }
+    Registry_dropResources(watchedDevice, resourceInUse);
+    watchedDevice.clear();
+    dynamicRevision++;
 }
 
 void Net_controlRequest(const char *what)
@@ -271,7 +569,7 @@ bool Net_requestAllManifests()
     return publishText("all/console/in", ">manifest msgpack");
 }
 
-bool Net_rebootDevice(const String &deviceName)
+bool Net_rebootDevice(const std::string &deviceName)
 {
     if (!deviceName.length() ||
         NightMare::GetConnectionState() != NightMare::ConnectionState::CONNECTED)
@@ -284,7 +582,7 @@ bool Net_rebootDevice(const String &deviceName)
     return publishText(deviceName + "/console/in", "REBOOT");
 }
 
-bool Net_deleteDevice(const String &deviceName)
+bool Net_deleteDevice(const std::string &deviceName)
 {
     if (!deviceName.length() ||
         NightMare::GetConnectionState() != NightMare::ConnectionState::CONNECTED)
@@ -295,7 +593,7 @@ bool Net_deleteDevice(const String &deviceName)
     // Snapshot the resource names before forgetting the device: they are what
     // the retained state topics are built from, and after Registry_forgetDevice
     // they are gone.
-    String resourceNames[REGISTRY_MAX_RESOURCES];
+    std::string resourceNames[REGISTRY_MAX_RESOURCES];
     int resourceNameCount = 0;
     for (int i = 0; i < Registry_resourceCount(); ++i)
     {
@@ -320,6 +618,7 @@ bool Net_deleteDevice(const String &deviceName)
         }
     }
     Registry_forgetDevice(deviceName);
+    removeFromSet(knownDevices, hashName(deviceName.c_str(), deviceName.length()));
 
     // An empty retained payload is the protocol's deletion marker. The manifest
     // and the status both have to go: either one left retained re-announces the
@@ -336,6 +635,11 @@ bool Net_deleteDevice(const String &deviceName)
     return published;
 }
 
+uint32_t Net_filteredMessages()
+{
+    return droppedFiltered.load();
+}
+
 uint32_t Net_droppedMessages()
 {
     return droppedFull.load() + droppedOversize.load();
@@ -346,18 +650,12 @@ void Net_begin()
     inbox = xRingbufferCreate(InboxBytes, RINGBUF_TYPE_NOSPLIT);
     if (!inbox)
     {
-        Serial.println("[net] inbox allocation failed; network messages will be ignored");
+        puts("[net] inbox allocation failed; network messages will be ignored");
     }
 
-    // Accepted and remembered before ESP-NOW is up, then restored when the
-    // gateway connection is established.
-    for (const char *filter : Subscriptions)
-    {
-        if (!NightMare::Subscribe(filter))
-        {
-            Serial.printf("[net] could not subscribe to %s\n", filter);
-        }
-    }
+    // Nothing to do for the subscriptions here: NightMare::Subscribe() refuses
+    // while no gateway is connected and does not remember the filter, so they
+    // are installed by Net_loop() each time the connection comes up.
 
     // The backend only answers what it is asked, and a panel that missed a
     // reply should not stay wrong until the next reboot. Time sync needs no job
@@ -373,9 +671,42 @@ void Net_begin()
 
 void Net_traceStartup()
 {
-    traceStartedMs = millis();
+    traceStartedMs = millisNow();
     traceNextSampleMs = traceStartedMs;
     tracingStartup = true;
+}
+
+void Net_suspend()
+{
+    if (NightMare::GetConnectionState() == NightMare::ConnectionState::CONNECTED)
+    {
+        // Say so rather than just vanish: the retained status is what every
+        // other panel and the backend read to decide this one is reachable.
+        // ESP-NOW sends from its own worker, so give it a moment to get the
+        // frame out before the radio is pulled from under it.
+        publishText(gDeviceIdentity.topic("status"),
+                    NightMare::ConnectionDeviceStatusJson(false), true);
+        sleepMs(150);
+    }
+
+    // Stops the station, reports the radio going down -- which is what ends
+    // ESP-NOW cleanly -- and deinitialises the driver.
+    NightMare::WiFiRadioEnd();
+
+    // Ending ESP-NOW cleared the message callback this file installed, and the
+    // framework installs its own again on the way back up.
+    transportHooked = false;
+    wasConnected = false;
+}
+
+void Net_resume()
+{
+    if (!NightMare::WiFiBegin())
+    {
+        puts("[net] radio did not restart after sleep");
+    }
+    // Reclaim the message callback at once, as tryStartNetwork() does at boot.
+    Net_loop();
 }
 
 void Net_loop()
@@ -384,7 +715,7 @@ void Net_loop()
     // dashboard bridge after the framework starts; state callbacks remain with
     // the framework, while message routing moves onto loop().
     if (!transportHooked &&
-        NightMare::GetSelectedConnection() == NightMare::ConnectionType::ESP_NOW &&
+        NightMare::GetActiveConnection() == NightMare::ConnectionType::ESP_NOW &&
         NightMare::GetConnectionState() != NightMare::ConnectionState::STOPPED)
     {
         NightMare::EspNowClient::onMessage(onEspNowMessage);
@@ -397,18 +728,33 @@ void Net_loop()
     // discovery and the retained replay.
     if (tracingStartup)
     {
-        const uint32_t elapsed = millis() - traceStartedMs;
+        const uint32_t elapsed = millisNow() - traceStartedMs;
         if (elapsed > TraceMaxMs)
         {
             tracingStartup = false;
         }
-        else if ((int32_t)(millis() - traceNextSampleMs) >= 0)
+        else if ((int32_t)(millisNow() - traceNextSampleMs) >= 0)
         {
             traceNextSampleMs += TraceIntervalMs;
             char stage[16];
             snprintf(stage, sizeof(stage), "t+%lu.%lus", (unsigned long)(elapsed / 1000),
                      (unsigned long)((elapsed % 1000) / 100));
             Heap_log(stage);
+        }
+
+        // Where the link has got to, once a second: the NightMare log is at
+        // warning level, and without this a link that never comes up looks the
+        // same as one that is still coming up. SEARCHING with a channel that
+        // never changes means the radio is pinned to an access point's channel.
+        if ((int32_t)(millisNow() - traceNextLinkMs) >= 0)
+        {
+            traceNextLinkMs = millisNow() + 1000;
+            printf("[link] wifi=%s espnow=%s conn=%s ch=%u gw=%s\n",
+                   WiFi_stateName(WiFi_state()),
+                   NightMare::EspNowClient::stateName(NightMare::EspNowClient::state()),
+                   NightMare::ConnectivityStateName(NightMare::EspNow_state()),
+                   (unsigned)WiFiRadio_channel(),
+                   NightMare::EspNowClient::gatewayId().c_str());
         }
     }
 
@@ -425,6 +771,13 @@ void Net_loop()
         appliedTargetsRevision = targetsRevision;
         AcClient_applyTargets();
         LightControl_applyTargets();
+        PcClient_applyTargets();
+    }
+
+    refreshWantedDevices();
+    if (connected && wasConnected)
+    {
+        syncDynamicSubscriptions(true, false);
     }
 
     if (connected && !wasConnected)
@@ -433,7 +786,19 @@ void Net_loop()
         // periodic 30-second heap sample is too coarse to show this burst.
         tracingStartup = false; // The curve ends here; the burst pair takes over.
         Heap_log("espnow up");
-        burstSampleAtMs = millis() + BurstSampleDelayMs;
+        burstSampleAtMs = millisNow() + BurstSampleDelayMs;
+
+        // On every connect, not just the first: a reconnect, and waking from
+        // sleep, both start with the gateway knowing nothing of this panel.
+        for (const char *filter : Subscriptions)
+        {
+            if (!NightMare::Subscribe(filter))
+            {
+                printf("[net] could not subscribe to %s\n", filter);
+            }
+        }
+
+        syncDynamicSubscriptions(true, true);
 
         // The current upstream startup path gates its automatic status publish
         // on the MQTT feature. ESP-NOW still uses the same retained status
@@ -449,8 +814,8 @@ void Net_loop()
     }
     wasConnected = connected;
 
-    // Unsigned comparison, so this survives the millis() rollover.
-    if (burstSampleAtMs && (int32_t)(millis() - burstSampleAtMs) >= 0)
+    // Unsigned comparison, so this survives the millisNow() rollover.
+    if (burstSampleAtMs && (int32_t)(millisNow() - burstSampleAtMs) >= 0)
     {
         burstSampleAtMs = 0;
         Heap_log("after burst");
@@ -484,7 +849,7 @@ void Net_loop()
 
     Mqttp_tick();
 
-    const uint32_t nowMs = millis();
+    const uint32_t nowMs = millisNow();
     if ((nowMs - lastMirrorMs) >= MirrorIntervalMs)
     {
         lastMirrorMs = nowMs;

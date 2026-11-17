@@ -1,4 +1,5 @@
 #include "Targets.h"
+#include "Sys.h"
 #include <NightMare.h>
 #include <atomic>
 
@@ -9,12 +10,12 @@ namespace
     /// One staged request from another task. The fields are written before
     /// `pending` is set and read after it is seen, and the requesting task does
     /// not touch them again while it is set, so the two tasks never hold the
-    /// same String at once.
+    /// same std::string at once.
     struct PendingRequest
     {
         int slot;
-        String device;
-        String resource;
+        std::string device;
+        std::string resource;
         bool keepResource;
     };
 
@@ -36,16 +37,17 @@ namespace
         {"ac_host", nullptr, "AC", ""},
         {"light_host", "light_res", "Light", "light"},
         {"rgb_host", "rgb_res", "RGB", "rgb"},
+        {"pc_host", nullptr, "PC", ""},
     };
 
     struct Binding
     {
-        String device;
-        String resource;
+        std::string device;
+        std::string resource;
     };
 
     Binding bindings[TARGET_SLOT_COUNT];
-    const String Empty;
+    const std::string Empty;
 
     /// The bindings rendered as JSON, rewritten by the loop task on every
     /// change. It exists so the console's `TARGET` query has something it can
@@ -97,22 +99,22 @@ void Targets_load()
         bindings[i].resource = Slots[i].resourceKey
                                    ? PersistentSettings.get(Slots[i].resourceKey,
                                                             Slots[i].defaultResource)
-                                   : String();
+                                   : std::string();
     }
     bump();
 }
 
-void Targets_set(TargetSlot slot, const String &device, const String &resource)
+void Targets_set(TargetSlot slot, const std::string &device, const std::string &resource)
 {
     if (!validSlot(slot))
     {
         return;
     }
 
-    String trimmedDevice = device;
-    trimmedDevice.trim();
-    String trimmedResource = resource;
-    trimmedResource.trim();
+    std::string trimmedDevice = device;
+    Text::trim(trimmedDevice);
+    std::string trimmedResource = resource;
+    Text::trim(trimmedResource);
 
     // Unbinding clears both halves: a resource name left behind would be
     // re-applied the next time a device is bound here, silently pointing the
@@ -120,8 +122,8 @@ void Targets_set(TargetSlot slot, const String &device, const String &resource)
     if (!trimmedDevice.length())
     {
         bindings[slot].device = "";
-        bindings[slot].resource = Slots[slot].resourceKey ? String(Slots[slot].defaultResource)
-                                                          : String();
+        bindings[slot].resource = Slots[slot].resourceKey ? std::string(Slots[slot].defaultResource)
+                                                          : std::string();
         persist(slot);
         bump();
         return;
@@ -138,13 +140,13 @@ void Targets_set(TargetSlot slot, const String &device, const String &resource)
     if (Slots[slot].resourceKey)
     {
         bindings[slot].resource = trimmedResource.length() ? trimmedResource
-                                                           : String(Slots[slot].defaultResource);
+                                                           : std::string(Slots[slot].defaultResource);
     }
     persist(slot);
     bump();
 }
 
-void Targets_setDevice(TargetSlot slot, const String &device)
+void Targets_setDevice(TargetSlot slot, const std::string &device)
 {
     if (!validSlot(slot))
     {
@@ -153,7 +155,7 @@ void Targets_setDevice(TargetSlot slot, const String &device)
     Targets_set(slot, device, bindings[slot].resource);
 }
 
-bool Targets_request(TargetSlot slot, const String &device, const String &resource,
+bool Targets_request(TargetSlot slot, const std::string &device, const std::string &resource,
                      bool keepResource)
 {
     if (!validSlot(slot) || pending.load(std::memory_order_acquire))
@@ -190,12 +192,12 @@ void Targets_applyPending()
     pending.store(false, std::memory_order_release);
 }
 
-const String &Targets_device(TargetSlot slot)
+const std::string &Targets_device(TargetSlot slot)
 {
     return validSlot(slot) ? bindings[slot].device : Empty;
 }
 
-const String &Targets_resource(TargetSlot slot)
+const std::string &Targets_resource(TargetSlot slot)
 {
     return validSlot(slot) ? bindings[slot].resource : Empty;
 }
@@ -211,7 +213,7 @@ bool Targets_configured(TargetSlot slot)
     return !Slots[slot].resourceKey || bindings[slot].resource.length();
 }
 
-bool Targets_matches(TargetSlot slot, const String &device, const String &resource)
+bool Targets_matches(TargetSlot slot, const std::string &device, const std::string &resource)
 {
     if (!Targets_configured(slot))
     {
@@ -234,7 +236,7 @@ const char *Targets_defaultResource(TargetSlot slot)
     return validSlot(slot) ? Slots[slot].defaultResource : "";
 }
 
-int Targets_slotOf(const String &device)
+int Targets_slotOf(const std::string &device)
 {
     if (!device.length())
     {
@@ -260,7 +262,7 @@ void Targets_summaryJson(char *out, size_t size)
     out[size - 1] = '\0';
 }
 
-bool Targets_isAc(const String &device)
+bool Targets_isAc(const std::string &device)
 {
     return device.length() && Targets_configured(TARGET_SLOT_AC) &&
            bindings[TARGET_SLOT_AC].device == device;

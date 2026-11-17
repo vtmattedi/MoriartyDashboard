@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // Which devices -- and which of their resources -- this panel drives.
 //
@@ -19,6 +22,10 @@
 //          ac_manual_sync, ac_sleep -- under names it chose, so binding the
 //          role means naming the device and letting App/AcClient.h address the
 //          rest. Targets_resource() is empty for this slot.
+//
+//   PC     one device again, for the same reason: the panel linked to the PC
+//          publishes pc_linked, pc_monitors_off and pc_sleep, and
+//          App/PcClient.h addresses them. Targets_resource() is empty here too.
 //
 //   LIGHT  one resource each: a writable boolean and a writable 24-bit colour.
 //   RGB    Nothing fixes their names, so both halves of the address are bound,
@@ -40,6 +47,8 @@ enum TargetSlot
     TARGET_SLOT_AC = 0,
     TARGET_SLOT_LIGHT,
     TARGET_SLOT_RGB,
+    // Last, so the stored order of the older slots is untouched.
+    TARGET_SLOT_PC,
     TARGET_SLOT_COUNT
 };
 
@@ -50,7 +59,7 @@ void Targets_load();
 /// @brief Bind a slot. An empty device unbinds it. `resource` is ignored for
 /// TARGET_SLOT_AC, whose resource names come from the AC contract.
 /// Loop task only.
-void Targets_set(TargetSlot slot, const String &device, const String &resource);
+void Targets_set(TargetSlot slot, const std::string &device, const std::string &resource);
 
 /// @brief Ask for a binding change from another task. One request is held at a
 /// time and applied by Targets_applyPending(); a second one arriving before the
@@ -59,7 +68,7 @@ void Targets_set(TargetSlot slot, const String &device, const String &resource);
 /// @param keepResource True to keep the slot's current resource, as
 /// Targets_setDevice() does.
 /// @return False when a request is already waiting.
-bool Targets_request(TargetSlot slot, const String &device, const String &resource,
+bool Targets_request(TargetSlot slot, const std::string &device, const std::string &resource,
                      bool keepResource);
 
 /// @brief Apply a pending request, if there is one. Loop task only; Net_loop()
@@ -69,21 +78,22 @@ void Targets_applyPending();
 /// @brief Bind a slot to a device, keeping whatever resource it already had (or
 /// the slot's default). The Devices screen binds this way; the Resources screen
 /// uses the two-argument form. Loop task only.
-void Targets_setDevice(TargetSlot slot, const String &device);
+void Targets_setDevice(TargetSlot slot, const std::string &device);
 
 /// @brief The device bound to a slot, or "" when unbound.
-const String &Targets_device(TargetSlot slot);
+const std::string &Targets_device(TargetSlot slot);
 
-/// @brief The resource bound to a slot. Always "" for TARGET_SLOT_AC.
-const String &Targets_resource(TargetSlot slot);
+/// @brief The resource bound to a slot. Always "" for TARGET_SLOT_AC and
+/// TARGET_SLOT_PC, which bind a whole device.
+const std::string &Targets_resource(TargetSlot slot);
 
 /// @brief Whether a slot has a device bound to it.
 bool Targets_configured(TargetSlot slot);
 
 /// @brief Whether this exact (device, resource) pair fills the slot.
-bool Targets_matches(TargetSlot slot, const String &device, const String &resource);
+bool Targets_matches(TargetSlot slot, const std::string &device, const std::string &resource);
 
-/// @brief Human-readable slot name ("AC", "Light", "RGB").
+/// @brief Human-readable slot name ("AC", "Light", "RGB", "PC").
 const char *Targets_label(TargetSlot slot);
 
 /// @brief The resource name a slot falls back to when only a device is named.
@@ -93,15 +103,15 @@ const char *Targets_defaultResource(TargetSlot slot);
 /// one board may own an air conditioner and a colour LED both -- so this
 /// reports the first, in slot order, and exists for the one-line badge on the
 /// Devices list rather than as an answer to "what is this device for".
-int Targets_slotOf(const String &device);
+int Targets_slotOf(const std::string &device);
 
 /// @brief Whether this device is bound as the air conditioner.
-bool Targets_isAc(const String &device);
+bool Targets_isAc(const std::string &device);
 
 /// @brief Every binding as JSON, into a caller-supplied buffer. Safe from any
 /// task, unlike the accessors above: it copies out of a fixed buffer that the
 /// loop task rewrites in place, so a read during a change can see a mixture of
-/// old and new text but never a String that has just been freed. 256 bytes is
+/// old and new text but never a std::string that has just been freed. 256 bytes is
 /// enough for the full document.
 void Targets_summaryJson(char *out, size_t size);
 

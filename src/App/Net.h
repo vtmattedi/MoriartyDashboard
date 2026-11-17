@@ -1,5 +1,8 @@
 #pragma once
-#include <Arduino.h>
+#include <stdint.h>
+#include <string>
+
+#include "Sys.h"
 
 // The panel's link to the rest of the NightMare network.
 //
@@ -34,6 +37,15 @@ void Net_begin();
 /// and time out any MQTTP request. Call from loop().
 void Net_loop();
 
+/// @brief Take the panel off the network: announce it offline, then stop the
+/// Wi-Fi station, ESP-NOW and the radio under them. For the sleep stage -- the
+/// radio is the largest thing the panel can switch off.
+void Net_suspend();
+
+/// @brief Undo Net_suspend(). Association, gateway discovery and the retained
+/// replay then run exactly as they do after a boot.
+void Net_resume();
+
 /// @brief Publish a request on the shared Control/request channel.
 void Net_controlRequest(const char *what);
 
@@ -43,7 +55,7 @@ bool Net_requestAllManifests();
 
 /// @brief Tell a device to restart, over its console topic.
 /// @return False if the gateway is down or the name is empty.
-bool Net_rebootDevice(const String &deviceName);
+bool Net_rebootDevice(const std::string &deviceName);
 
 /// @brief Remove a device from the network's view of itself.
 ///
@@ -58,11 +70,26 @@ bool Net_rebootDevice(const String &deviceName);
 /// A resource the panel never heard cannot be tombstoned, for the same reason
 /// the library's own identity cleanup can only reach resources it has declared.
 /// @return False if the gateway is down or the name is empty.
-bool Net_deleteDevice(const String &deviceName);
+bool Net_deleteDevice(const std::string &deviceName);
 
 /// @brief Wanted messages lost because the inbox was full or oversize.
 /// Should stay at 0; a rising count means loop() is too slow to keep up.
 uint32_t Net_droppedMessages();
+
+/// @brief Resource messages deliberately not queued, because they belong to a
+/// device nothing is using. Not a loss -- see Net_droppedMessages() for those.
+uint32_t Net_filteredMessages();
+
+/// @brief Start receiving every resource of one device, for its page. The panel
+/// subscribes to `+/status` only; everything else a device publishes is fetched
+/// when someone opens that device, and let go when they leave it. One device at a
+/// time: watching another stops the last. The gateway replays the retained
+/// values on subscribe, so the list fills within a second or two.
+void Net_watchDevice(const std::string &deviceName);
+
+/// @brief Stop watching, and drop the watched device's resources that nothing is
+/// using. Resources bound to a role are kept.
+void Net_unwatchDevice();
 
 /// @brief Log heap every half second through radio, Wi-Fi and gateway startup.
 void Net_traceStartup();
