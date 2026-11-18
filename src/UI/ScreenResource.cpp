@@ -172,10 +172,6 @@ namespace
         {
             return "light switch";
         }
-        if (Targets_matches(TARGET_SLOT_RGB, deviceName, resourceName))
-        {
-            return "RGB colour";
-        }
         if (SensorBindings_matches(SENSOR_SLOT_DOOR, deviceName, resourceName))
         {
             return SensorBindings_inverted(SENSOR_SLOT_DOOR) ? "door (1 = closed)"
@@ -227,10 +223,6 @@ namespace
             if (Targets_matches(TARGET_SLOT_LIGHT, deviceName, resourceName))
             {
                 Targets_set(TARGET_SLOT_LIGHT, "", "");
-            }
-            if (Targets_matches(TARGET_SLOT_RGB, deviceName, resourceName))
-            {
-                Targets_set(TARGET_SLOT_RGB, "", "");
             }
             break;
         }

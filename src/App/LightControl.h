@@ -7,7 +7,8 @@
 // The two single-resource roles: a plain light and a colour light.
 //
 //   TARGET_SLOT_LIGHT   a writable boolean resource   RemoteState<bool>
-//   TARGET_SLOT_RGB     a writable 24-bit colour      RemoteState<uint32_t>
+//   TARGET_SLOT_RGB     a whole device (the bed light, Sherlock): `led:power` (bool)
+//                       and `led:color` (colour), both fixed names
 //
 // Neither has a contract the way the AC does, so both halves of the address are
 // bound from the Resources screen -- pick the resource, give it the job. The
@@ -73,17 +74,13 @@ bool LightControl_toggle();
 /// @brief Whether the owner has reported a colour at all.
 bool Rgb_hasState();
 
-/// @brief Whether it is lit, i.e. the published colour is not black.
+/// @brief Whether the device reports its power as on.
 bool Rgb_on();
 
-/// @brief The chosen colour at full brightness, for the swatch and the wheel.
+/// @brief The device's colour, for the swatch and the wheel.
 uint32_t Rgb_colour();
 
-/// @brief 0-255, derived from the published colour's largest channel.
-uint8_t Rgb_brightness();
-
 bool Rgb_setColour(uint32_t hex);
-bool Rgb_setBrightness(uint8_t level);
 bool Rgb_setOn(bool on);
 
 #pragma endregion

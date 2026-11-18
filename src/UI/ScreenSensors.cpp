@@ -124,10 +124,6 @@ namespace
         {
             return Targets_label(TARGET_SLOT_LIGHT);
         }
-        if (Targets_matches(TARGET_SLOT_RGB, device, resource))
-        {
-            return Targets_label(TARGET_SLOT_RGB);
-        }
         for (int slot = 0; slot < SENSOR_SLOT_COUNT; ++slot)
         {
             if (SensorBindings_matches((SensorSlot)slot, device, resource))

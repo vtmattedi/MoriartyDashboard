@@ -995,7 +995,6 @@ namespace
 
     lv_obj_t *rgbSwitch = nullptr;
     lv_obj_t *rgbSwatch = nullptr;
-    lv_obj_t *rgbBrightness = nullptr;
     lv_obj_t *rgbStatus = nullptr;
     lv_obj_t *colorModal = nullptr;
     lv_obj_t *colorWheel = nullptr;
@@ -1083,18 +1082,6 @@ namespace
         Ui_markDirty();
     }
 
-    void onBrightnessReleased(lv_event_t *event)
-    {
-        if (applyingRemoteState || !Targets_configured(TARGET_SLOT_RGB))
-        {
-            return;
-        }
-        // Sent on release rather than on every value change: dragging a slider
-        // emits dozens of events and each one would be an MQTT publish.
-        Rgb_setBrightness((uint8_t)lv_slider_get_value(rgbBrightness));
-        Ui_markDirty();
-    }
-
     void buildRgbCard(lv_obj_t *parent)
     {
         lv_obj_t *card = Theme_card(parent, UI_CARD_W, LV_SIZE_CONTENT);
@@ -1139,14 +1126,6 @@ namespace
             lv_obj_set_style_bg_color(preset, lv_color_hex(ColorPresets[i]), LV_PART_MAIN);
             lv_obj_add_event_cb(preset, onPresetClicked, LV_EVENT_CLICKED, (void *)(intptr_t)ColorPresets[i]);
         }
-
-        rgbBrightness = lv_slider_create(card);
-        lv_obj_set_width(rgbBrightness, CardInner);
-        lv_slider_set_range(rgbBrightness, 0, 255);
-        lv_obj_set_style_bg_color(rgbBrightness, UI_COL_SURFACE_ALT, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(rgbBrightness, UI_COL_ACCENT, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(rgbBrightness, UI_COL_TEXT, LV_PART_KNOB);
-        lv_obj_add_event_cb(rgbBrightness, onBrightnessReleased, LV_EVENT_RELEASED, nullptr);
     }
 
     void refreshRgbCard()
@@ -1155,7 +1134,6 @@ namespace
         const bool enabled = live == CARD_LIVE;
 
         setWidgetEnabled(rgbSwitch, enabled);
-        setWidgetEnabled(rgbBrightness, enabled);
 
         if (enabled)
         {
@@ -1166,7 +1144,7 @@ namespace
             char detail[96];
             if (live == CARD_UNBOUND)
             {
-                snprintf(detail, sizeof(detail), "nothing bound - pick a colour resource under Resources");
+                snprintf(detail, sizeof(detail), "nothing bound - bind a device as Bed under Devices");
             }
             else
             {
@@ -1188,13 +1166,6 @@ namespace
         else
         {
             lv_obj_clear_state(rgbSwitch, LV_STATE_CHECKED);
-        }
-
-        // Leave the slider alone while it is being dragged, or the refresh would
-        // yank the knob back under the finger.
-        if (!lv_obj_has_state(rgbBrightness, LV_STATE_PRESSED))
-        {
-            lv_slider_set_value(rgbBrightness, Rgb_brightness(), LV_ANIM_OFF);
         }
         applyingRemoteState = false;
 

@@ -10,78 +10,26 @@ namespace
     // Static storage: the resource manager keeps non-owning pointers to these
     // for the life of the panel.
     RemoteState<bool> light{"light"};
-    RemoteState<uint32_t> rgb{"rgb"};
+    // The bed light is a whole device (Sherlock), addressed by two fixed resources:
+    // `led:power` and `led:color`. Brightness is left to the device.
+    RemoteState<bool> bedPower{"led:power"};
+    RemoteState<ColourType> bedColour{"led:color"};
+    const char *const BedPowerResource = "led:power";
+    const char *const BedColourResource = "led:color";
 
     std::string appliedLightDevice;
     std::string appliedLightResource;
-    std::string appliedRgbDevice;
-    std::string appliedRgbResource;
+    std::string appliedBedDevice;
     bool applied = false;
 
-    /// The colour and level last chosen here. Not the truth -- the device is --
-    /// but what "on" should restore and what the wheel should open on, neither of
-    /// which a published 0 can answer.
+    /// The colour last chosen here, so "on" and the wheel have something to show
+    /// before the device has reported one.
     uint32_t chosenColour = 0xFFFFFF;
-    uint8_t chosenBrightness = 255;
 
-    uint8_t channelMax(uint32_t colour)
+    uint32_t publishedColour()
     {
-        const uint8_t r = (colour >> 16) & 0xFF;
-        const uint8_t g = (colour >> 8) & 0xFF;
-        const uint8_t b = colour & 0xFF;
-        const uint8_t rg = r > g ? r : g;
-        return rg > b ? rg : b;
-    }
-
-    /// Scale a colour so its largest channel reads 255, which is the hue with
-    /// the brightness taken back out of it. Black has no hue to recover.
-    uint32_t normalise(uint32_t colour)
-    {
-        const uint8_t peak = channelMax(colour);
-        if (peak == 0)
-        {
-            return 0;
-        }
-        const uint32_t r = (((colour >> 16) & 0xFF) * 255u + peak / 2) / peak;
-        const uint32_t g = (((colour >> 8) & 0xFF) * 255u + peak / 2) / peak;
-        const uint32_t b = ((colour & 0xFF) * 255u + peak / 2) / peak;
-        return (r << 16) | (g << 8) | b;
-    }
-
-    uint32_t scale(uint32_t colour, uint8_t level)
-    {
-        const uint32_t r = (((colour >> 16) & 0xFF) * level + 127) / 255;
-        const uint32_t g = (((colour >> 8) & 0xFF) * level + 127) / 255;
-        const uint32_t b = ((colour & 0xFF) * level + 127) / 255;
-        return (r << 16) | (g << 8) | b;
-    }
-
-    uint32_t published()
-    {
-        return rgb.hasValue() ? (rgb.getValue() & 0x00FFFFFF) : 0;
-    }
-
-    /// Fold whatever the owner last reported back into the local choice, so the
-    /// wheel and the slider follow a change made somewhere else -- another
-    /// panel, a console, the device itself.
-    void adoptPublished()
-    {
-        const uint32_t value = published();
-        if (value == 0)
-        {
-            return; // Off says nothing about which colour or how bright.
-        }
-        chosenColour = normalise(value);
-        chosenBrightness = channelMax(value);
-    }
-
-    bool publish(uint32_t colour)
-    {
-        if (!Targets_configured(TARGET_SLOT_RGB))
-        {
-            return false;
-        }
-        return rgb.setValue(colour & 0x00FFFFFF);
+        const NightMare::RGB c = bedColour.getValue().toRGB();
+        return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | c.b;
     }
 }
 
@@ -90,15 +38,15 @@ void LightControl_begin()
     // Bound before a source is known: the manager registers them now and
     // subscribes as soon as LightControl_applyTargets() supplies an address.
     gResourcesManager.bindResource(&light);
-    gResourcesManager.bindResource(&rgb);
+    gResourcesManager.bindResource(&bedPower);
+    gResourcesManager.bindResource(&bedColour);
 }
 
 void LightControl_applyTargets()
 {
     const std::string &lightDevice = Targets_device(TARGET_SLOT_LIGHT);
     const std::string &lightResource = Targets_resource(TARGET_SLOT_LIGHT);
-    const std::string &rgbDevice = Targets_device(TARGET_SLOT_RGB);
-    const std::string &rgbResource = Targets_resource(TARGET_SLOT_RGB);
+    const std::string &bedDevice = Targets_device(TARGET_SLOT_RGB);
 
     // Each half is retargeted only when its own address moved: setSource() drops
     // everything learned from the old source, and a needless one would blank a
@@ -109,11 +57,11 @@ void LightControl_applyTargets()
         appliedLightResource = lightResource;
         light.setSource(lightDevice, lightResource);
     }
-    if (!applied || rgbDevice != appliedRgbDevice || rgbResource != appliedRgbResource)
+    if (!applied || bedDevice != appliedBedDevice)
     {
-        appliedRgbDevice = rgbDevice;
-        appliedRgbResource = rgbResource;
-        rgb.setSource(rgbDevice, rgbResource);
+        appliedBedDevice = bedDevice;
+        bedPower.setSource(bedDevice, BedPowerResource);
+        bedColour.setSource(bedDevice, BedColourResource);
     }
     applied = true;
 }
@@ -126,11 +74,18 @@ void LightControl_mirrorToRegistry()
                               Targets_resource(TARGET_SLOT_LIGHT),
                               light.getValue() ? "true" : "false");
     }
-    if (Targets_configured(TARGET_SLOT_RGB) && rgb.hasValue())
+    if (Targets_configured(TARGET_SLOT_RGB))
     {
-        Registry_noteResource(Targets_device(TARGET_SLOT_RGB),
-                              Targets_resource(TARGET_SLOT_RGB),
-                              std::to_string(published()));
+        if (bedPower.hasValue())
+        {
+            Registry_noteResource(Targets_device(TARGET_SLOT_RGB), BedPowerResource,
+                                  bedPower.getValue() ? "true" : "false");
+        }
+        if (bedColour.hasValue())
+        {
+            Registry_noteResource(Targets_device(TARGET_SLOT_RGB), BedColourResource,
+                                  std::to_string(publishedColour()));
+        }
     }
 }
 
@@ -169,64 +124,51 @@ bool LightControl_toggle()
 
 bool Rgb_hasState()
 {
-    return Targets_configured(TARGET_SLOT_RGB) && rgb.hasValue() && !rgb.isStale();
+    return Targets_configured(TARGET_SLOT_RGB) && bedPower.hasValue() && !bedPower.isStale();
 }
 
 bool Rgb_on()
 {
-    return Rgb_hasState() && published() != 0;
+    return Rgb_hasState() && bedPower.getValue();
 }
 
 uint32_t Rgb_colour()
 {
-    adoptPublished();
+    if (bedColour.hasValue())
+    {
+        const uint32_t value = publishedColour();
+        if (value != 0)
+        {
+            chosenColour = value;
+        }
+    }
     return chosenColour;
-}
-
-uint8_t Rgb_brightness()
-{
-    adoptPublished();
-    return chosenBrightness;
 }
 
 bool Rgb_setColour(uint32_t hex)
 {
-    const uint32_t hue = normalise(hex & 0x00FFFFFF);
-    if (hue == 0)
+    hex &= 0x00FFFFFF;
+    if (hex == 0)
     {
         // Picking black on the wheel means "off", not a colour of its own.
         return Rgb_setOn(false);
     }
-    chosenColour = hue;
-    return publish(scale(chosenColour, chosenBrightness));
-}
-
-bool Rgb_setBrightness(uint8_t level)
-{
-    chosenBrightness = level;
-    // Moving the slider on a light that is off leaves it off, and sends nothing:
-    // brightness is how bright it will be when it comes on, not a command to
-    // switch it on. Reported as accepted, because the choice was taken.
+    if (!Targets_configured(TARGET_SLOT_RGB))
+    {
+        return false;
+    }
+    chosenColour = hex;
+    bool ok = bedColour.setValue(ColourType((uint8_t)(hex >> 16), (uint8_t)(hex >> 8), (uint8_t)hex));
     if (!Rgb_on())
     {
-        return true;
+        ok = bedPower.setValue(true) && ok;
     }
-    return publish(scale(chosenColour, level));
+    return ok;
 }
 
 bool Rgb_setOn(bool on)
 {
-    if (!on)
-    {
-        // Remember what it was before going dark, so the next "on" restores it.
-        adoptPublished();
-        return publish(0);
-    }
-    // Never switch on into black: a brightness of zero would look like the
-    // command did nothing.
-    const uint8_t level = chosenBrightness ? chosenBrightness : 255;
-    chosenBrightness = level;
-    return publish(scale(chosenColour, level));
+    return Targets_configured(TARGET_SLOT_RGB) && bedPower.setValue(on);
 }
 
 #pragma endregion

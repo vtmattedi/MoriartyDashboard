@@ -36,7 +36,7 @@ namespace
     const SlotInfo Slots[TARGET_SLOT_COUNT] = {
         {"ac_host", nullptr, "AC", ""},
         {"light_host", "light_res", "Light", "light"},
-        {"rgb_host", "rgb_res", "RGB", "rgb"},
+        {"rgb_host", nullptr, "RGB", ""},
         {"pc_host", nullptr, "PC", ""},
     };
 

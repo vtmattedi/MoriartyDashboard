@@ -200,8 +200,8 @@ namespace
     }
 
     /// The AC, the PC link and the RGB light are the roles bound here: each is a
-    /// device with a published contract (the AC's resources, the PC's, an
-    /// `rgb` colour), so naming the device names all of it. The plain light
+    /// device with a published contract (the AC's resources, the PC's, the bed
+    /// light's `led:power` and `led:color`), so naming the device names all of it. The plain light
     /// is a single resource with no agreed name, so it is bound on the
     /// resource's own page, where what is being pointed at is visible.
     ///

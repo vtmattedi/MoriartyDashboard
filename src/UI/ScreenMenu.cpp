@@ -179,7 +179,7 @@ namespace
         active = Rgb_on();
         if (active)
         {
-            snprintf(text, size, "On\n%u%%", (unsigned)((Rgb_brightness() * 100) / 255));
+            snprintf(text, size, "On");
         }
         else
         {
