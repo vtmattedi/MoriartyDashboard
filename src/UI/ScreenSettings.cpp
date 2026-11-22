@@ -448,7 +448,7 @@ void ScreenSettings_refresh()
                  "#8a97a8 ip#  %s\n"
                  "#8a97a8 wifi#  %s\n"
                  "#8a97a8 esp-now#  %s",
-                 gDeviceIdentity.getDeviceName().c_str(),
+                 gDeviceIdentity.getDisplayName().c_str(),
                  wifi.state == NightMare::WiFiState::CONNECTED ? wifi.ip.c_str() : "--",
                  wifi.state == NightMare::WiFiState::CONNECTED ? wifi.ssid.c_str() : "disconnected",
                  connectionText);

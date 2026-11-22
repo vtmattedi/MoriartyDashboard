@@ -359,7 +359,7 @@ void Ui_show(UiPage page)
     }
 
     const char *title = pageTitle(page);
-    StatusBar_setTitle(title ? title : gDeviceIdentity.getDeviceName().c_str(), page != UI_PAGE_MENU);
+    StatusBar_setTitle(title ? title : gDeviceIdentity.getDisplayName().c_str(), page != UI_PAGE_MENU);
     dirty = true;
 }
 
